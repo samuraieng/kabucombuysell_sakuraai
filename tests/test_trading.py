@@ -12,7 +12,7 @@ class FakeClient:
     def __init__(self, responses=None):
         self.responses = responses or []
         self.post_calls = []
-        self.delete_calls = []
+        self.put_calls = []
 
     def post(self, path, json_body, env="prod"):
         self.post_calls.append((path, json_body, env))
@@ -23,8 +23,8 @@ class FakeClient:
             raise resp
         return resp
 
-    def delete(self, path, json_body, env="prod"):
-        self.delete_calls.append((path, json_body, env))
+    def put(self, path, json_body, env="prod"):
+        self.put_calls.append((path, json_body, env))
         return {}
 
 
@@ -56,6 +56,31 @@ class TestSendOrder(unittest.TestCase):
         self.assertEqual(result.request_body, body)
         self.assertIn("500", result.message)
         self.assertIn("Internal Server Error", result.message)
+
+
+class TestCancelOrder(unittest.TestCase):
+    def test_cancel_order_uses_put_and_order_id_key(self):
+        """cancel_order は PUT /cancelorder を OrderID キーで呼び出す。"""
+        client = FakeClient()
+        trade = KabuApiTrade(client)
+        result = trade.cancel_order("20261013A01N72401417")
+
+        self.assertTrue(result)
+        self.assertEqual(len(client.put_calls), 1)
+        path, body, env = client.put_calls[0]
+        self.assertEqual(path, "/cancelorder")
+        self.assertEqual(body, {"OrderID": "20261013A01N72401417"})
+        self.assertEqual(env, "prod")
+
+    def test_cancel_order_returns_false_on_exception(self):
+        """cancel_order は例外時に False を返す。"""
+        class RaisingClient:
+            def put(self, path, json_body, env="prod"):
+                raise RuntimeError("connection error")
+
+        trade = KabuApiTrade(RaisingClient())
+        result = trade.cancel_order("20261013A01N72401417")
+        self.assertFalse(result)
 
 
 class TestOrderResultOneShotError(unittest.TestCase):

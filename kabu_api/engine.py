@@ -61,8 +61,8 @@ class TradingEngine:
     """
 
     # 返済注文で永続的と判断できるエラーが発生した場合、同一建玉の再試行を
-    # しばらく抑制するためのクールダウン時間(秒)。
-    SETTLE_ERROR_COOLDOWN_SECONDS = 60.0
+    # 指定サイクル数抑制する。
+    SETTLE_ERROR_COOLDOWN_CYCLES = 5
 
     def __init__(
         self,
@@ -102,7 +102,9 @@ class TradingEngine:
         # 状態
         self.holdings = None
         self.pending_buys: dict[str, dict] = {}   # code -> {"order_id", "qty"}
-        self.settle_error_cooldown: dict[str, float] = {}  # hold_id -> クールダウン期限(epoch秒)
+        # code:hold_id -> order_id: 自プロセスが発注した未約定返済注文
+        self.pending_settlements: dict[str, str] = {}
+        self.settle_error_cooldown: dict[str, int] = {}    # hold_id -> 残りクールダウンサイクル数
 
     # ------------------------------------------------------------------
     # 起動時処理
@@ -119,7 +121,8 @@ class TradingEngine:
             try:
                 unit, group = self.symbol_api.unit_and_group(row.code)
                 print(f"  [retlist] {row.code}: 売買単位={unit}, 呼値グループ={group}, "
-                      f"指定金額={row.spread or '呼値(自動)'}")
+                      f"spread_plus={row.spread_plus or 1}, "
+                      f"spread_minus={row.spread_minus or 5}")
             except Exception as e:
                 print(f"  [retlist警告] {row.code}: 銘柄情報取得失敗 ({e})")
 
@@ -134,20 +137,28 @@ class TradingEngine:
     def _is_settle_cooldown(self, code: str, hold_id: str) -> bool:
         """指定建玉が前回の永続エラーによりクールダウン中かどうか。"""
         key = self._settle_cooldown_key(code, hold_id)
-        expire = self.settle_error_cooldown.get(key)
-        if expire is None:
-            return False
-        if time.monotonic() >= expire:
-            del self.settle_error_cooldown[key]
+        remaining = self.settle_error_cooldown.get(key, 0)
+        if remaining <= 0:
+            if key in self.settle_error_cooldown:
+                del self.settle_error_cooldown[key]
             return False
         return True
 
     def _set_settle_cooldown(self, code: str, hold_id: str) -> None:
-        """指定建玉を一定時間クールダウン状態にする。"""
+        """指定建玉を指定サイクル数クールダウン状態にする。"""
         key = self._settle_cooldown_key(code, hold_id)
-        self.settle_error_cooldown[key] = (
-            time.monotonic() + self.SETTLE_ERROR_COOLDOWN_SECONDS
-        )
+        self.settle_error_cooldown[key] = self.SETTLE_ERROR_COOLDOWN_CYCLES
+
+    def _decrement_settle_cooldowns(self) -> None:
+        """サイクル終了時にクールダウン残数を1減らす。"""
+        expired = [
+            key for key, remaining in self.settle_error_cooldown.items()
+            if remaining <= 1
+        ]
+        for key in expired:
+            del self.settle_error_cooldown[key]
+        for key in self.settle_error_cooldown:
+            self.settle_error_cooldown[key] -= 1
 
     # ------------------------------------------------------------------
     # ループ制御
@@ -224,6 +235,7 @@ class TradingEngine:
         self._process_buys()
         self._process_sells()
         self._process_settlements()
+        self._decrement_settle_cooldowns()
         print(f"[{self._now()}] サイクル終了")
 
     # ------------------------------------------------------------------
@@ -367,7 +379,8 @@ class TradingEngine:
                     print(
                         f"  [返済クールダウン中] {code} {label}: "
                         f"前回の永続エラーのため "
-                        f"{self.SETTLE_ERROR_COOLDOWN_SECONDS:.0f}秒間返済注文を抑制します"
+                        f"あと{self.settle_error_cooldown.get(self._settle_cooldown_key(code, pos.hold_id), 0)}"
+                        f"サイクル返済注文を抑制します"
                     )
                     continue
 
@@ -376,10 +389,29 @@ class TradingEngine:
                     code, pos.hold_id, cashmargin=CASHMARGIN_SETTLE
                 )
 
-                spread = row.spread if row.spread > 0 else tick_size(
+                tick = tick_size(
                     pos.price if pos.price > 0 else pos.current_price, group
                 )
-                targets = settle_targets(pos.side, pos.price, spread)
+                spread_plus = (
+                    row.spread_plus * tick if row.spread_plus > 0 else tick
+                )
+                spread_minus = (
+                    row.spread_minus * tick if row.spread_minus > 0 else 5 * tick
+                )
+                targets = settle_targets(pos.side, pos.price, spread_plus, spread_minus)
+
+                # 自プロセスが発注した返済注文を記憶から補完
+                # (/orders の未約定レスポンスに HoldID/ExecutionID が含まれない場合の対策)
+                pending_key = self._settle_cooldown_key(code, pos.hold_id)
+                pending_oid = self.pending_settlements.get(pending_key)
+                if pending_oid and pending_oid not in open_settle_ids:
+                    if self.orders_api.has_open_order(
+                        code, side=targets["close_side"], cashmargin=CASHMARGIN_SETTLE
+                    ):
+                        open_settle_ids.append(pending_oid)
+                        print(f"  [返済判定補完] {code} {label}: 自プロセス発注の未約定返済注文 "
+                              f"OrderId={pending_oid} を取消対象に追加")
+
                 current = pos.current_price or self.symbol_api.get_current_price(code)
                 if current <= 0 or not targets["close_side"]:
                     continue
@@ -425,12 +457,19 @@ class TradingEngine:
                         print(f"  [DEV返済] {code} {label}: 成行 数量={settle_qty} "
                               f"(損切り: 現在値{current})")
                         continue
+                    close_positions = [{"HoldID": pos.hold_id, "Qty": settle_qty}]
+                    print(
+                        f"  [返済注文発行] {code} {label}: Side={targets['close_side']} "
+                        f"成行 数量={settle_qty} Exchange={pos.exchange} "
+                        f"MarginTradeType={pos.margin_trade_type or 3} "
+                        f"ClosePositions={close_positions}"
+                    )
                     result = self.trade.send_credit_settle(
                         code,
                         targets["close_side"],
                         settle_qty,
                         price=0.0,
-                        close_positions=[{"HoldID": pos.hold_id, "Qty": settle_qty}],
+                        close_positions=close_positions,
                         margin_trade_type=pos.margin_trade_type or 3,
                         exchange=pos.exchange,
                         env=self.order_env(),
@@ -456,14 +495,21 @@ class TradingEngine:
                     limit_price = round_to_tick(targets["limit_price"], group)
                     if self.order_env() is None:
                         print(f"  [DEV返済] {code} {label}: 指値{limit_price} 数量={settle_qty} "
-                              f"(指定金額={spread})")
+                              f"(spread_plus={row.spread_plus or 1}, spread_minus={row.spread_minus or 5})")
                         continue
+                    close_positions = [{"HoldID": pos.hold_id, "Qty": settle_qty}]
+                    print(
+                        f"  [返済注文発行] {code} {label}: Side={targets['close_side']} "
+                        f"指値{limit_price} 数量={settle_qty} Exchange={pos.exchange} "
+                        f"MarginTradeType={pos.margin_trade_type or 3} "
+                        f"ClosePositions={close_positions}"
+                    )
                     result = self.trade.send_credit_settle(
                         code,
                         targets["close_side"],
                         settle_qty,
                         price=limit_price,
-                        close_positions=[{"HoldID": pos.hold_id, "Qty": settle_qty}],
+                        close_positions=close_positions,
                         margin_trade_type=pos.margin_trade_type or 3,
                         exchange=pos.exchange,
                         env=self.order_env(),
@@ -472,7 +518,11 @@ class TradingEngine:
 
                 if result.ok:
                     print(f"  [{tag}] {code} {label}: 数量={settle_qty} "
-                          f"OrderId={result.order_id} (指定金額={spread})")
+                          f"OrderId={result.order_id} "
+                          f"(spread_plus={row.spread_plus or 1}, spread_minus={row.spread_minus or 5})")
+                    # 発注した返済注文を記憶し、次サイクルで建玉ID紐付けが取れなくても検出できるようにする
+                    if result.order_id:
+                        self.pending_settlements[pending_key] = result.order_id
                 else:
                     if result.is_one_shot_amount_error:
                         self._set_settle_cooldown(code, pos.hold_id)
@@ -489,7 +539,7 @@ class TradingEngine:
                             f"  [返済注文エラー(クールダウン)] {code} {label}: "
                             f"{result.message} "
                             f"(同じ建玉に対して既に未約定の返済注文がある可能性があります。"
-                            f"{self.SETTLE_ERROR_COOLDOWN_SECONDS:.0f}秒間返済注文を抑制します)"
+                            f"{self.SETTLE_ERROR_COOLDOWN_CYCLES}サイクル間返済注文を抑制します)"
                         )
                     else:
                         print(f"  [返済注文エラー] {code} {label}: {result.message}")

@@ -94,16 +94,20 @@ class TestSellList(unittest.TestCase):
 
 class TestRetList(unittest.TestCase):
     def test_load(self):
-        path = write_tmp("7203,10\n9433,\n8306,0\n")
+        path = write_tmp("7203,10,50\n9433,,\n8306,0,0\n")
         try:
             rl = RetList(path).load()
-            self.assertEqual(rl.rows[0].spread, 10.0)
-            self.assertEqual(rl.rows[1].spread, 0.0)  # 空欄 → 0
-            self.assertEqual(rl.rows[2].spread, 0.0)
-            # effective_spread: 呼値未取得時のフォールバック 1.0
-            self.assertEqual(rl.rows[1].effective_spread(), 1.0)
-            rl.rows[1].tick = 5.0
-            self.assertEqual(rl.rows[1].effective_spread(), 5.0)
+            self.assertEqual(rl.rows[0].spread_plus, 10.0)
+            self.assertEqual(rl.rows[0].spread_minus, 50.0)
+            self.assertEqual(rl.rows[1].spread_plus, 0.0)  # 空欄 → 0
+            self.assertEqual(rl.rows[1].spread_minus, 0.0)
+            self.assertEqual(rl.rows[2].spread_plus, 0.0)
+            self.assertEqual(rl.rows[2].spread_minus, 0.0)
+            # effective_spread_plus: 呼値未取得時のフォールバック 1.0
+            self.assertEqual(rl.rows[1].effective_spread_plus(), 1.0)
+            self.assertEqual(rl.rows[1].effective_spread_minus(), 5.0)
+            rl.rows[1].spread_plus = 5.0
+            self.assertEqual(rl.rows[1].effective_spread_plus(), 5.0)
         finally:
             os.unlink(path)
 

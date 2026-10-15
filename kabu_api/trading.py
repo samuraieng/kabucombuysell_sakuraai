@@ -1,4 +1,4 @@
-"""kabuステーションAPI 注文発行・取消 (POST /sendorder, DELETE /cancelorder)。
+"""kabuステーションAPI 注文発行・取消 (POST /sendorder, PUT /cancelorder)。
 
 注文パラメータの既定値 (要求仕様に基づく):
     - 現物買 : CashMargin=1, Side="2", DelivType=2(お預り金), FundType="AA"(信用代用),
@@ -286,9 +286,12 @@ class KabuApiTrade:
     # 注文取消
     # ------------------------------------------------------------------
     def cancel_order(self, order_id: str, env: str = "prod") -> bool:
-        """DELETE /cancelorder で注文を取消する。"""
+        """PUT /cancelorder で注文を取消する。
+
+        公式リファレンスではリクエストボディのキーは ``OrderID`` である。
+        """
         try:
-            self.client.delete("/cancelorder", {"OrderId": str(order_id)}, env=env)
+            self.client.put("/cancelorder", {"OrderID": str(order_id)}, env=env)
             return True
         except Exception as e:
             print(f"  [取消失敗] OrderId={order_id}: {e}")

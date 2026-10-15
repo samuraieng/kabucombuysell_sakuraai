@@ -63,6 +63,19 @@ class KabuApiOrders:
             result.append(o)
         return result
 
+    @staticmethod
+    def _order_id(order: dict) -> str:
+        """注文IDを返す。
+
+        kabuステーションAPI /orders の注文IDは "ID" フィールドで返る。
+        後方互換のため "OrderId" もフォールバックとして参照する。
+        """
+        for key in ("ID", "OrderId"):
+            value = order.get(key)
+            if value is not None and str(value) != "":
+                return str(value)
+        return ""
+
     def _leaves_qty(self, order: dict) -> int:
         """注文の未約定数量を返す。
 
@@ -104,9 +117,9 @@ class KabuApiOrders:
                 continue
             if cashmargin is not None and str(o.get("CashMargin", "")) != str(cashmargin):
                 continue
-            oid = o.get("OrderId")
+            oid = self._order_id(o)
             if oid:
-                ids.append(str(oid))
+                ids.append(oid)
         return ids
 
     def open_order_ids_by_hold_id(self, symbol: str, hold_id: str,
@@ -123,8 +136,8 @@ class KabuApiOrders:
             for d in details:
                 matched_id = str(d.get("HoldID", "") or d.get("ExecutionID", ""))
                 if matched_id == str(hold_id):
-                    oid = o.get("OrderId")
+                    oid = self._order_id(o)
                     if oid:
-                        result.append(str(oid))
+                        result.append(oid)
                     break
         return result

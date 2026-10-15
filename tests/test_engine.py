@@ -256,7 +256,7 @@ class TestSettlementProcessing(unittest.TestCase):
         # 買建 1000円, spread 10 → 1010円で売り返済
         with tempfile.TemporaryDirectory() as d:
             e = make_engine(
-                d, "", ret_content="7203,10\n",
+                d, "", ret_content="7203,10,50\n",
                 holdings=make_holdings(credit=[
                     CreditPosition(hold_id="E123", symbol="7203", side="2", price=1000.0, qty=100, current_price=1005.0, margin_trade_type=3),
                 ]),
@@ -275,7 +275,7 @@ class TestSettlementProcessing(unittest.TestCase):
         # 建玉市場が東証(1)の場合、返済注文も Exchange=1 で発注する
         with tempfile.TemporaryDirectory() as d:
             e = make_engine(
-                d, "", ret_content="7203,10\n",
+                d, "", ret_content="7203,10,50\n",
                 holdings=make_holdings(credit=[
                     CreditPosition(hold_id="E123", symbol="7203", side="2",
                                    price=1000.0, qty=100, current_price=1005.0,
@@ -291,7 +291,7 @@ class TestSettlementProcessing(unittest.TestCase):
         # 売建 2000円, spread 10 → 1990円で買い返済
         with tempfile.TemporaryDirectory() as d:
             e = make_engine(
-                d, "", ret_content="8306,10\n",
+                d, "", ret_content="8306,10,50\n",
                 holdings=make_holdings(credit=[
                     CreditPosition(hold_id="E999", symbol="8306", side="1", price=2000.0, qty=100, current_price=1990.0, margin_trade_type=3),
                 ]),
@@ -306,7 +306,7 @@ class TestSettlementProcessing(unittest.TestCase):
         # 買建 1000円, spread 10 → 現在値 950 で損切り (取消 + 成行)
         with tempfile.TemporaryDirectory() as d:
             e = make_engine(
-                d, "", ret_content="7203,10\n",
+                d, "", ret_content="7203,10,50\n",
                 holdings=make_holdings(credit=[
                     CreditPosition(hold_id="E123", symbol="7203", side="2", price=1000.0, qty=100, current_price=950.0, margin_trade_type=3),
                 ]),
@@ -326,7 +326,7 @@ class TestSettlementProcessing(unittest.TestCase):
         # 条件#6 が成立すれば未約定注文を取消して成行返済する
         with tempfile.TemporaryDirectory() as d:
             e = make_engine(
-                d, "", ret_content="7203,10\n",
+                d, "", ret_content="7203,10,50\n",
                 holdings=make_holdings(credit=[
                     CreditPosition(hold_id="E123", symbol="7203", side="2", price=1000.0,
                                    qty=100, hold_qty=100, current_price=950.0, margin_trade_type=3),
@@ -344,7 +344,7 @@ class TestSettlementProcessing(unittest.TestCase):
         # 銘柄単位の未約定返済注文を取消して成行返済する
         with tempfile.TemporaryDirectory() as d:
             e = make_engine(
-                d, "", ret_content="5016,\n",
+                d, "", ret_content="5016,,\n",
                 holdings=make_holdings(credit=[
                     CreditPosition(hold_id="E5016", symbol="5016", side="1", price=3560.0,
                                    qty=100, hold_qty=100, current_price=3566.0, margin_trade_type=3),
@@ -366,7 +366,7 @@ class TestSettlementProcessing(unittest.TestCase):
         # spread=0 → 呼値単位 (1000円 → 1円)
         with tempfile.TemporaryDirectory() as d:
             e = make_engine(
-                d, "", ret_content="7203,\n",
+                d, "", ret_content="7203,,\n",
                 holdings=make_holdings(credit=[
                     CreditPosition(hold_id="E123", symbol="7203", side="2", price=1000.0, qty=100, current_price=1005.0, margin_trade_type=3),
                 ]),
@@ -379,7 +379,7 @@ class TestSettlementProcessing(unittest.TestCase):
         # hold_qty == qty でも未約定返済注文がなければ、条件#6 で成行返済する
         with tempfile.TemporaryDirectory() as d:
             e = make_engine(
-                d, "", ret_content="5016,\n",
+                d, "", ret_content="5016,,\n",
                 holdings=make_holdings(credit=[
                     CreditPosition(hold_id="E5016", symbol="5016", side="1", price=3560.0,
                                    qty=100, hold_qty=100, current_price=3566.0, margin_trade_type=3),
@@ -397,7 +397,7 @@ class TestSettlementProcessing(unittest.TestCase):
 
     def test_no_credit_position_ignored(self):
         with tempfile.TemporaryDirectory() as d:
-            e = make_engine(d, "", ret_content="7203,10\n")
+            e = make_engine(d, "", ret_content="7203,10,50\n")
             e.run_cycle()
             settles = [c for c in e.trade.calls if c[0] == "credit_settle"]
             self.assertEqual(len(settles), 0)
@@ -405,7 +405,7 @@ class TestSettlementProcessing(unittest.TestCase):
     def test_skip_when_open_settle_exists(self):
         with tempfile.TemporaryDirectory() as d:
             e = make_engine(
-                d, "", ret_content="7203,10\n",
+                d, "", ret_content="7203,10,50\n",
                 holdings=make_holdings(credit=[
                     CreditPosition(hold_id="E123", symbol="7203", side="2", price=1000.0, qty=100, current_price=1005.0, margin_trade_type=3),
                 ]),
@@ -429,7 +429,7 @@ class TestSettlementOneShotCooldown(unittest.TestCase):
             )
             trade = FakeTrade(settle_responses=[error_result, OrderResult(ok=True)])
             e = make_engine(
-                d, "", ret_content="285A,\n",
+                d, "", ret_content="285A,,\n",
                 holdings=make_holdings(credit=[
                     CreditPosition(hold_id="E285A", symbol="285A", side="1", price=17130.0,
                                    qty=100, current_price=17170.0, margin_trade_type=3),
@@ -459,14 +459,14 @@ class TestSettlementOneShotCooldown(unittest.TestCase):
             )
             trade = FakeTrade(settle_responses=[error_result, OrderResult(ok=True)])
             e = make_engine(
-                d, "", ret_content="285A,\n",
+                d, "", ret_content="285A,,\n",
                 holdings=make_holdings(credit=[
                     CreditPosition(hold_id="E285A", symbol="285A", side="1", price=17130.0,
                                    qty=100, current_price=17170.0, margin_trade_type=3),
                 ]),
                 trade=trade,
             )
-            e.SETTLE_ERROR_COOLDOWN_SECONDS = 0.0  # 即期限切れ
+            e.SETTLE_ERROR_COOLDOWN_CYCLES = 0  # 即期限切れ
             e.run_cycle()
             e.run_cycle()
             settles = [c for c in e.trade.calls if c[0] == "credit_settle"]
@@ -486,7 +486,7 @@ class TestSettlementSpecCooldown(unittest.TestCase):
             )
             trade = FakeTrade(settle_responses=[error_result, OrderResult(ok=True)])
             e = make_engine(
-                d, "", ret_content="5016,\n",
+                d, "", ret_content="5016,,\n",
                 holdings=make_holdings(credit=[
                     CreditPosition(hold_id="E2026100904PD1", symbol="5016", side="2",
                                    price=3589.7, qty=100, current_price=3590.0,

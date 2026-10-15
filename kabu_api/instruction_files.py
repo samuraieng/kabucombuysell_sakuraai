@@ -9,7 +9,7 @@
 書式 (カラム):
     list_buy.txt  : code, price, qty, trigger_price
     list_sell.txt : code, price, qty, trigger_price
-    list_ret.txt  : code, spread
+    list_ret.txt  : code, spread_plus, spread_minus
     list_no_sell.txt : code (1行1コード)
 """
 
@@ -106,26 +106,31 @@ class SellRow:
 
 @dataclass
 class RetRow:
-    """list_ret.txt の1行: code, spread。
+    """list_ret.txt の1行: code, spread_plus, spread_minus。
 
-    spread: 指定金額 (1株あたりの差益目標, 円)。
-    空欄/0 → 呼値単位 (取引最小単位) を使用。
+    spread_plus:  利確幅の呼値単位倍数。空欄/0 → 1（呼値単位×1）。
+    spread_minus: 損切幅の呼値単位倍数。空欄/0 → 5（呼値単位×5）。
     """
 
     code: str
-    spread: float            # 0 → 呼値単位
+    spread_plus: float       # 利確幅の呼値単位倍数
+    spread_minus: float      # 損切幅の呼値単位倍数
     line_no: int
     raw_line: str
     tick: float = 0.0        # 読み込み時に /symbol から取得した呼値単位
     active: bool = True
 
-    def effective_spread(self) -> float:
-        """実効指定金額を返す (0指定時は呼値単位)。"""
-        if self.spread and self.spread > 0:
-            return self.spread
-        if self.tick > 0:
-            return self.tick
-        return 1.0  # 呼値取得不可時のフォールバック
+    def effective_spread_plus(self) -> float:
+        """実効利確幅（呼値単位倍数）を返す (0指定時は1)。"""
+        if self.spread_plus and self.spread_plus > 0:
+            return self.spread_plus
+        return 1.0
+
+    def effective_spread_minus(self) -> float:
+        """実効損切幅（呼値単位倍数）を返す (0指定時は5)。"""
+        if self.spread_minus and self.spread_minus > 0:
+            return self.spread_minus
+        return 5.0
 
 
 @dataclass
@@ -249,16 +254,22 @@ class SellList(InstructionFile):
 
 
 class RetList(InstructionFile):
-    """list_ret.txt: code, spread"""
+    """list_ret.txt: code, spread_plus, spread_minus"""
 
     def _parse(self, fields: list[str], line_no: int, raw_line: str):
         if len(fields) < 1:
             return None
         code = fields[0]
-        spread = to_float(fields[1]) if len(fields) >= 2 else None
-        if spread is None:
-            spread = 0.0  # 空欄 → 呼値単位(取引最小単位)
-        return RetRow(code=code, spread=spread, line_no=line_no, raw_line=raw_line)
+        spread_plus = to_float(fields[1]) if len(fields) >= 2 else None
+        spread_minus = to_float(fields[2]) if len(fields) >= 3 else None
+        if spread_plus is None:
+            spread_plus = 0.0
+        if spread_minus is None:
+            spread_minus = 0.0
+        return RetRow(
+            code=code, spread_plus=spread_plus, spread_minus=spread_minus,
+            line_no=line_no, raw_line=raw_line,
+        )
 
 
 class NoSellList(InstructionFile):
@@ -268,8 +279,11 @@ class NoSellList(InstructionFile):
         if not CODE_RE.match(fields[0]):
             print(f"  [警告] {self.path} 行{line_no}: 銘柄コード不正 → スキップ")
             return None
-        # 単純化のため RetRow 形式を流用 (spread 未使用)
-        return RetRow(code=fields[0], spread=0.0, line_no=line_no, raw_line=raw_line)
+        # 単純化のため RetRow 形式を流用 (spread_plus/spread_minus 未使用)
+        return RetRow(
+            code=fields[0], spread_plus=0.0, spread_minus=0.0,
+            line_no=line_no, raw_line=raw_line,
+        )
 
     def codes(self) -> set:
         return {r.code for r in self.rows}

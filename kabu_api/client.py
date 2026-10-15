@@ -198,6 +198,10 @@ class KabuApiClient:
         self._throttle_order(path)
         return self.request("POST", path, env=env, json_body=json_body)
 
+    def put(self, path: str, json_body: dict, env: str = "prod"):
+        self._throttle_order(path)
+        return self.request("PUT", path, env=env, json_body=json_body)
+
     def delete(self, path: str, json_body: dict, env: str = "prod"):
         self._throttle_order(path)
         return self.request("DELETE", path, env=env, json_body=json_body)

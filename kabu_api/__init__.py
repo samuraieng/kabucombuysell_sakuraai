@@ -10,7 +10,7 @@
     KabuApiPositions   : 残高照会 (GET /positions) → 現物・信用ポジション
     KabuApiSymbol      : 銘柄情報 (GET /symbol/{symbol}) → 売買単位・呼値
     KabuApiOrders      : 注文照会 (GET /orders) → 未約定注文の検出
-    KabuApiTrade       : 注文発行・取消 (POST /sendorder, DELETE /cancelorder)
+    KabuApiTrade       : 注文発行・取消 (POST /sendorder, PUT /cancelorder)
     InstructionFile(s) : 指示ファイル4種の読み込み・解析・無効化書き戻し
     TradingEngine      : 周期処理エンジン (買い/売り/返済/売らない)
 """

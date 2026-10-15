@@ -53,37 +53,40 @@ def sell_condition(price: float, trigger_price: float, current: float) -> str | 
     return None
 
 
-def settle_targets(side: str, price: float, spread: float) -> dict:
+def settle_targets(side: str, price: float, spread_plus: float, spread_minus: float) -> dict:
     """信用建玉1件に対する返済条件#5 / #6 の目標価格を計算する。
 
     Args:
         side: 建玉の売買区分 ("1"=売建 / "2"=買建)
         price: 確定値 (建玉の取得価額)
-        spread: 指定金額 (1株あたり差益目標, 円)
+        spread_plus:  利確幅の金額 (1株あたり, 円)
+        spread_minus: 損切幅の金額 (1株あたり, 円)
 
     Returns:
         {
             "close_side": 返済方向の Side ("1"=返済売 / "2"=返済買),
-            "limit_price":   条件#5 の指値価格 (儲けが出る返済金額),
-            "stop_current":  条件#6 の発火現在値 (この価格に達したら成行),
+            "limit_price":  条件#5 の指値価格,
+            "stop_current": 条件#6 の発火現在値 (この価格に達したら成行),
         }
     """
-    if spread <= 0:
-        spread = 1.0
+    if spread_plus <= 0:
+        spread_plus = 1.0
+    if spread_minus <= 0:
+        spread_minus = 5.0
 
     if side == "2":
-        # 買建玉 → 売り返済: 確定買値 + 指定金額 で売る
+        # 買建玉 → 売り返済
         return {
             "close_side": SIDE_SELL,
-            "limit_price": price + spread,
-            "stop_current": price - 5 * spread,   # 現在値 <= で損切り
+            "limit_price": price + spread_plus,
+            "stop_current": price - spread_minus,  # 現在値 <= で損切り
         }
     if side == "1":
-        # 売建玉 → 買い返済: 確定売値 - 指定金額 で買う
+        # 売建玉 → 買い返済
         return {
             "close_side": SIDE_BUY,
-            "limit_price": price - spread,
-            "stop_current": price + 5 * spread,   # 現在値 >= で損切り
+            "limit_price": price - spread_plus,
+            "stop_current": price + spread_minus,  # 現在値 >= で損切り
         }
     return {"close_side": "", "limit_price": 0.0, "stop_current": 0.0}
 

@@ -47,54 +47,54 @@ class TestSellCondition(unittest.TestCase):
 
 class TestSettleTargets(unittest.TestCase):
     def test_long_position(self):
-        # 買建 (Side=2): 確定買値+spread で売り返済 / 確定買値-5×spread で損切り
-        t = settle_targets("2", 1000.0, 10.0)
+        # 買建 (Side=2): 確定買値+spread_plus で売り返済 / 確定買値-spread_minus で損切り
+        t = settle_targets("2", 1000.0, 10.0, 50.0)
         self.assertEqual(t["close_side"], "1")
         self.assertAlmostEqual(t["limit_price"], 1010.0)
         self.assertAlmostEqual(t["stop_current"], 950.0)
 
     def test_short_position(self):
-        # 売建 (Side=1): 確定売値-spread で買い返済 / 確定売値+5×spread で損切り
-        t = settle_targets("1", 1000.0, 10.0)
+        # 売建 (Side=1): 確定売値-spread_plus で買い返済 / 確定売値+spread_minus で損切り
+        t = settle_targets("1", 1000.0, 10.0, 50.0)
         self.assertEqual(t["close_side"], "2")
         self.assertAlmostEqual(t["limit_price"], 990.0)
         self.assertAlmostEqual(t["stop_current"], 1050.0)
 
     def test_spec_example(self):
-        # 仕様例: 買値1000, 指定金額1 → +1円で売 / -5円で損切り
-        t = settle_targets("2", 1000.0, 1.0)
+        # 仕様例: 買値1000, spread_plus=1, spread_minus=5 → +1円で売 / -5円で損切り
+        t = settle_targets("2", 1000.0, 1.0, 5.0)
         self.assertAlmostEqual(t["limit_price"], 1001.0)
         self.assertAlmostEqual(t["stop_current"], 995.0)
 
     def test_invalid_side(self):
-        t = settle_targets("9", 1000.0, 10.0)
+        t = settle_targets("9", 1000.0, 10.0, 50.0)
         self.assertEqual(t["close_side"], "")
 
 
 class TestSettleSignal(unittest.TestCase):
     def test_stop_market_long(self):
-        t = settle_targets("2", 1000.0, 10.0)
+        t = settle_targets("2", 1000.0, 10.0, 50.0)
         self.assertEqual(settle_signal(t, 950.0), "market")
         self.assertEqual(settle_signal(t, 949.0), "market")
 
     def test_limit_long(self):
-        t = settle_targets("2", 1000.0, 10.0)
+        t = settle_targets("2", 1000.0, 10.0, 50.0)
         self.assertEqual(settle_signal(t, 1000.0), "limit")
         self.assertEqual(settle_signal(t, 900.0), "market")  # 損切り優先
 
     def test_stop_market_short(self):
-        t = settle_targets("1", 1000.0, 10.0)
+        t = settle_targets("1", 1000.0, 10.0, 50.0)
         self.assertEqual(settle_signal(t, 1050.0), "market")
 
     def test_no_signal(self):
-        t = settle_targets("2", 1000.0, 10.0)
+        t = settle_targets("2", 1000.0, 10.0, 50.0)
         # 条件#5 は「即時、返済金額で指す」が常時成立 (指値返済を維持)
         self.assertEqual(settle_signal(t, 1005.0), "limit")
         self.assertEqual(settle_signal(t, 900.0), "market")  # 損切り優先
-        # 指値が0以下 (売建の確定売値 < spread) は指値不可 → 条件#6に達していなければ発動しない
-        t2 = settle_targets("1", 5.0, 10.0)
+        # 指値が0以下 (売建の確定売値 < spread_plus) は指値不可 → 条件#6に達していなければ発動しない
+        t2 = settle_targets("1", 5.0, 10.0, 50.0)
         self.assertIsNone(settle_signal(t2, 10.0))
-        # ただし損切りライン (確定売値+5xspread=55円) を超えれば成行損切り
+        # ただし損切りライン (確定売値+spread_minus=55円) を超えれば成行損切り
         self.assertEqual(settle_signal(t2, 100.0), "market")
 
 
