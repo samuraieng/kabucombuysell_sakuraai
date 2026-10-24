@@ -16,6 +16,10 @@
 import re
 from dataclasses import dataclass, field
 
+from .logger import get_logger
+
+logger = get_logger(__name__)
+
 COMMENT_PREFIXES = ("#", "//")
 CODE_RE = re.compile(r"^[A-Za-z0-9]{4,5}$")
 
@@ -153,10 +157,10 @@ class InstructionFile:
             with open(self.path, encoding="utf-8") as f:
                 self.raw_lines = f.readlines()
         except FileNotFoundError:
-            print(f"指示ファイルが見つかりません(空リスト扱い): {self.path}")
+            logger.warning(f"指示ファイルが見つかりません(空リスト扱い): {self.path}")
             return self
         except OSError as e:
-            print(f"指示ファイル読込エラー({self.path}): {e}")
+            logger.error(f"指示ファイル読込エラー({self.path}): {e}")
             return self
 
         header_seen = False
@@ -170,13 +174,13 @@ class InstructionFile:
                 continue
             if not CODE_RE.match(fields[0]):
                 # 銘柄コード不正 (4-5桁の数字以外) → スキップ
-                print(f"  [警告] {self.path} 行{line_no}: 銘柄コード不正 → スキップ")
+                logger.warning(f"  [警告] {self.path} 行{line_no}: 銘柄コード不正 → スキップ")
                 continue
             row = self._parse(fields, line_no, raw)
             if row is not None:
                 self.rows.append(row)
 
-        print(f"指示ファイル読込: {self.path} ({len(self.rows)} 行)")
+        logger.info(f"指示ファイル読込: {self.path} ({len(self.rows)} 行)")
         return self
 
     def _parse(self, fields: list[str], line_no: int, raw_line: str):
@@ -201,9 +205,9 @@ class InstructionFile:
             with open(self.path, "w", encoding="utf-8") as f:
                 f.writelines(self.raw_lines)
         except OSError as e:
-            print(f"指示ファイル書込エラー({self.path}): {e}")
+            logger.error(f"指示ファイル書込エラー({self.path}): {e}")
             return False
-        print(f"  [無効化] {self.path} {row.code} 行{row.line_no}: # を付与")
+        logger.info(f"  [無効化] {self.path} {row.code} 行{row.line_no}: # を付与")
         return True
 
     def active_rows(self) -> list:
@@ -218,14 +222,14 @@ class BuyList(InstructionFile):
 
     def _parse(self, fields: list[str], line_no: int, raw_line: str):
         if len(fields) < 4:
-            print(f"  [警告] {self.path} 行{line_no}: カラム不足 (code,price,qty,trigger_price)")
+            logger.warning(f"  [警告] {self.path} 行{line_no}: カラム不足 (code,price,qty,trigger_price)")
             return None
         code = fields[0]
         price = to_float(fields[1])
         qty = to_int(fields[2])
         trigger = to_float(fields[3])
         if price is None or qty is None or trigger is None:
-            print(f"  [警告] {self.path} 行{line_no}: 数値項目不正 → スキップ")
+            logger.warning(f"  [警告] {self.path} 行{line_no}: 数値項目不正 → スキップ")
             return None
         return BuyRow(
             code=code, price=price, qty=qty, trigger_price=trigger,
@@ -238,14 +242,14 @@ class SellList(InstructionFile):
 
     def _parse(self, fields: list[str], line_no: int, raw_line: str):
         if len(fields) < 4:
-            print(f"  [警告] {self.path} 行{line_no}: カラム不足 (code,price,qty,trigger_price)")
+            logger.warning(f"  [警告] {self.path} 行{line_no}: カラム不足 (code,price,qty,trigger_price)")
             return None
         code = fields[0]
         price = to_float(fields[1])
         qty = to_int(fields[2])
         trigger = to_float(fields[3])
         if price is None or qty is None or trigger is None:
-            print(f"  [警告] {self.path} 行{line_no}: 数値項目不正 → スキップ")
+            logger.warning(f"  [警告] {self.path} 行{line_no}: 数値項目不正 → スキップ")
             return None
         return SellRow(
             code=code, price=price, qty=qty, trigger_price=trigger,
@@ -277,7 +281,7 @@ class NoSellList(InstructionFile):
 
     def _parse(self, fields: list[str], line_no: int, raw_line: str):
         if not CODE_RE.match(fields[0]):
-            print(f"  [警告] {self.path} 行{line_no}: 銘柄コード不正 → スキップ")
+            logger.warning(f"  [警告] {self.path} 行{line_no}: 銘柄コード不正 → スキップ")
             return None
         # 単純化のため RetRow 形式を流用 (spread_plus/spread_minus 未使用)
         return RetRow(

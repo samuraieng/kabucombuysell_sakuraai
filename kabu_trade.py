@@ -23,7 +23,9 @@
 import argparse
 import sys
 
-from kabu_api import KabuApiConfig, TradingEngine
+from kabu_api import KabuApiConfig, TradingEngine, get_logger, setup_logging
+
+logger = get_logger(__name__)
 
 
 def parse_args() -> argparse.Namespace:
@@ -64,10 +66,10 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    setup_logging()
 
     if args.cycle not in (0, 9999) and not (1 <= args.cycle <= 3600):
-        print("エラー: --cycle は 0 / 1〜3600 / 9999 のいずれかを指定してください。",
-              file=sys.stderr)
+        logger.error("エラー: --cycle は 0 / 1〜3600 / 9999 のいずれかを指定してください。")
         return 1
 
     engine = TradingEngine(
@@ -83,7 +85,7 @@ def main() -> int:
     try:
         engine.setup()
     except Exception as e:
-        print(f"エラー: 起動時処理に失敗しました: {e}", file=sys.stderr)
+        logger.error(f"エラー: 起動時処理に失敗しました: {e}")
         return 1
 
     engine.run()

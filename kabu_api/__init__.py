@@ -17,6 +17,7 @@
 
 from .config import KabuApiConfig
 from .exceptions import KabuApiAuthError, KabuApiException
+from .logger import get_logger, setup_logging
 from .client import KabuApiClient
 from .positions import KabuApiPositions, CashHolding, CreditPosition
 from .symbol_info import KabuApiSymbol, tick_size
@@ -44,6 +45,8 @@ __all__ = [
     "KabuApiConfig",
     "KabuApiException",
     "KabuApiAuthError",
+    "get_logger",
+    "setup_logging",
     "KabuApiClient",
     "KabuApiPositions",
     "CashHolding",

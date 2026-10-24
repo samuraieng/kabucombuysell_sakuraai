@@ -7,10 +7,13 @@ from .client import KabuApiClient
 from .config import KabuApiConfig
 from .conditions import buy_condition, sell_condition, settle_signal, settle_targets
 from .instruction_files import BuyList, NoSellList, RetList, SellList
+from .logger import get_logger
 from .orders import CASHMARGIN_SETTLE, KabuApiOrders
 from .positions import KabuApiPositions
 from .symbol_info import KabuApiSymbol, round_to_tick, tick_size
 from .trading import CASHMARGIN_CASH, CASHMARGIN_SETTLE, KabuApiTrade
+
+logger = get_logger(__name__)
 
 
 class MarketHours:
@@ -120,11 +123,11 @@ class TradingEngine:
         for row in self.ret_list.rows:
             try:
                 unit, group = self.symbol_api.unit_and_group(row.code)
-                print(f"  [retlist] {row.code}: 売買単位={unit}, 呼値グループ={group}, "
-                      f"spread_plus={row.spread_plus or 1}, "
-                      f"spread_minus={row.spread_minus or 5}")
+                logger.info(f"  [retlist] {row.code}: 売買単位={unit}, 呼値グループ={group}, "
+                            f"spread_plus={row.spread_plus or 1}, "
+                            f"spread_minus={row.spread_minus or 5}")
             except Exception as e:
-                print(f"  [retlist警告] {row.code}: 銘柄情報取得失敗 ({e})")
+                logger.warning(f"  [retlist警告] {row.code}: 銘柄情報取得失敗 ({e})")
 
     def order_env(self) -> str | None:
         """注文発行先の環境。dev モードは発注しないため None。"""
@@ -174,14 +177,14 @@ class TradingEngine:
             self.run_cycle()
             return
 
-        print(f"ループモード: {'待機なし' if self.cycle == 0 else f'{self.cycle}秒間隔'}"
-              f" / {'市場時間のみ' if self.market_hours else '24時間'}"
-              f" / Ctrl+C で停止")
+        logger.info(f"ループモード: {'待機なし' if self.cycle == 0 else f'{self.cycle}秒間隔'}"
+                    f" / {'市場時間のみ' if self.market_hours else '24時間'}"
+                    f" / Ctrl+C で停止")
         while True:
             try:
                 if self.market_hours and not MarketHours.is_market_hours():
                     wait = MarketHours.seconds_until_next_open()
-                    print(f"[{self._now()}] 市場時間外です ({wait:.0f}秒後に開場)")
+                    logger.warning(f"[{self._now()}] 市場時間外です ({wait:.0f}秒後に開場)")
                     time.sleep(min(max(wait, 5), 60))
                     continue
                 self.run_cycle()
@@ -189,10 +192,10 @@ class TradingEngine:
                     continue
                 self._sleep_cycle(self.cycle)
             except KeyboardInterrupt:
-                print("\nユーザーにより中断されました。")
+                logger.info("\nユーザーにより中断されました。")
                 break
             except Exception as e:
-                print(f"[{self._now()}] 予期せぬエラー: {e}")
+                logger.error(f"[{self._now()}] 予期せぬエラー: {e}")
                 if self.cycle == 0:
                     time.sleep(1.0)
                 else:
@@ -216,9 +219,9 @@ class TradingEngine:
     # 1サイクル
     # ------------------------------------------------------------------
     def run_cycle(self) -> None:
-        print(f"\n{'=' * 60}")
-        print(f"[{self._now()}] サイクル開始 (mode={self.mode})")
-        print(f"{'=' * 60}")
+        logger.info(f"\n{'=' * 60}")
+        logger.info(f"[{self._now()}] サイクル開始 (mode={self.mode})")
+        logger.info(f"{'=' * 60}")
 
         # 1) 指示ファイルの再読み込み (buylist / sellnolist は毎周期反映)
         self.no_sell = NoSellList(self.sellnolist_path).load()
@@ -226,8 +229,8 @@ class TradingEngine:
 
         # 2) 所有リスト更新
         self.holdings = self.positions_api.build_holdings()
-        print(f"所有リスト: 現物 {len(self.holdings.cash)} 銘柄 / "
-              f"信用 {sum(len(v) for v in self.holdings.credit.values())} 建玉")
+        logger.info(f"所有リスト: 現物 {len(self.holdings.cash)} 銘柄 / "
+                    f"信用 {sum(len(v) for v in self.holdings.credit.values())} 建玉")
         self._print_credit_positions()
 
         # 3) 各事象を独立に処理
@@ -236,7 +239,7 @@ class TradingEngine:
         self._process_sells()
         self._process_settlements()
         self._decrement_settle_cooldowns()
-        print(f"[{self._now()}] サイクル終了")
+        logger.info(f"[{self._now()}] サイクル終了")
 
     # ------------------------------------------------------------------
     # 買い (条件#1 / 条件#2)
@@ -251,12 +254,12 @@ class TradingEngine:
             # 注文が終了(全約定/取消/失効) → 約定数量を確認
             hold_qty = self.holdings.cash_qty(code)
             if hold_qty >= info["qty"]:
-                print(f"  [買約定] {code}: {hold_qty}株 取得 → list_buy.txt を無効化")
+                logger.info(f"  [買約定] {code}: {hold_qty}株 取得 → list_buy.txt を無効化")
                 row = next((r for r in self.buy_list.active_rows() if r.code == code), None)
                 if row is not None:
                     self.buy_list.disable_row(row)
             else:
-                print(f"  [買注文終了] {code}: 約定せず終了 → 再評価します")
+                logger.info(f"  [買注文終了] {code}: 約定せず終了 → 再評価します")
             del self.pending_buys[code]
 
     def _process_buys(self) -> None:
@@ -268,7 +271,7 @@ class TradingEngine:
             try:
                 current = self.symbol_api.get_current_price(code)
             except Exception as e:
-                print(f"  [買警告] {code}: 現在値取得失敗 ({e})")
+                logger.warning(f"  [買警告] {code}: 現在値取得失敗 ({e})")
                 continue
             if current <= 0:
                 continue
@@ -280,17 +283,17 @@ class TradingEngine:
                 row.trigger_price > 0 and current <= row.trigger_price
             ) else "条件#1"
             if self.order_env() is None:
-                print(f"  [DEV買] {code}: {signal} 数量={row.qty} ({reason})")
+                logger.info(f"  [DEV買] {code}: {signal} 数量={row.qty} ({reason})")
                 continue
 
             price = row.price if signal == "limit" else 0.0
             result = self.trade.send_cash_buy(code, row.qty, price, env=self.order_env())
             if result.ok:
                 self.pending_buys[code] = {"order_id": result.order_id, "qty": row.qty}
-                print(f"  [買注文] {code}: {signal} 数量={row.qty} 価格={price or '成行'} "
-                      f"OrderId={result.order_id} ({reason})")
+                logger.info(f"  [買注文] {code}: {signal} 数量={row.qty} 価格={price or '成行'} "
+                            f"OrderId={result.order_id} ({reason})")
             else:
-                print(f"  [買注文エラー] {code}: {result.message}")
+                logger.error(f"  [買注文エラー] {code}: {result.message}")
 
     # ------------------------------------------------------------------
     # 売り (条件#3 / 条件#4)
@@ -322,23 +325,23 @@ class TradingEngine:
             if open_ids and signal == "market":
                 # 条件#4成立 → 現在の指値売りを取り消して成行
                 for oid in open_ids:
-                    print(f"  [売取消] {code}: OrderId={oid} (条件#4成立)")
+                    logger.info(f"  [売取消] {code}: OrderId={oid} (条件#4成立)")
                     self.trade.cancel_order(oid)
 
             reason = "条件#4(トリガー以上)" if (
                 row.trigger_price > 0 and current >= row.trigger_price
             ) else "条件#3"
             if self.order_env() is None:
-                print(f"  [DEV売] {code}: {signal} 数量={sell_qty} ({reason})")
+                logger.info(f"  [DEV売] {code}: {signal} 数量={sell_qty} ({reason})")
                 continue
 
             price = row.price if signal == "limit" else 0.0
             result = self.trade.send_cash_sell(code, sell_qty, price, env=self.order_env())
             if result.ok:
-                print(f"  [売注文] {code}: {signal} 数量={sell_qty} 価格={price or '成行'} "
-                      f"OrderId={result.order_id} ({reason})")
+                logger.info(f"  [売注文] {code}: {signal} 数量={sell_qty} 価格={price or '成行'} "
+                            f"OrderId={result.order_id} ({reason})")
             else:
-                print(f"  [売注文エラー] {code}: {result.message}")
+                logger.error(f"  [売注文エラー] {code}: {result.message}")
 
     def _print_credit_positions(self) -> None:
         """信用建玉の詳細を表示する (コード・銘柄名・数量・建玉単価・時価・損益)。"""
@@ -346,9 +349,9 @@ class TradingEngine:
             for pos in positions:
                 label = {"2": "買建", "1": "売建"}.get(pos.side, "信用")
                 name = pos.name or "(不明)"
-                print(f"  [信用] {pos.symbol} {name} {label} "
-                      f"数量={pos.qty} 建玉単価={pos.price:.1f} "
-                      f"時価={pos.current_price:.1f} 損益={pos.profit_loss:.1f}")
+                logger.info(f"  [信用] {pos.symbol} {name} {label} "
+                            f"数量={pos.qty} 建玉単価={pos.price:.1f} "
+                            f"時価={pos.current_price:.1f} 損益={pos.profit_loss:.1f}")
 
     # ------------------------------------------------------------------
     # 返済 (条件#5 / 条件#6)
@@ -369,14 +372,14 @@ class TradingEngine:
             for pos in positions:
                 # 建玉ID が取得できていない場合は返済できない
                 if not pos.hold_id:
-                    print(f"  [返済スキップ] {code}: 建玉ID(HoldID) が未設定です")
+                    logger.warning(f"  [返済スキップ] {code}: 建玉ID(HoldID) が未設定です")
                     continue
 
                 label = {"2": "買建", "1": "売建"}.get(pos.side, "信用")
 
                 # 前回のワンショット金額エラーなどでクールダウン中ならスキップ
                 if self._is_settle_cooldown(code, pos.hold_id):
-                    print(
+                    logger.warning(
                         f"  [返済クールダウン中] {code} {label}: "
                         f"前回の永続エラーのため "
                         f"あと{self.settle_error_cooldown.get(self._settle_cooldown_key(code, pos.hold_id), 0)}"
@@ -409,8 +412,8 @@ class TradingEngine:
                         code, side=targets["close_side"], cashmargin=CASHMARGIN_SETTLE
                     ):
                         open_settle_ids.append(pending_oid)
-                        print(f"  [返済判定補完] {code} {label}: 自プロセス発注の未約定返済注文 "
-                              f"OrderId={pending_oid} を取消対象に追加")
+                        logger.debug(f"  [返済判定補完] {code} {label}: 自プロセス発注の未約定返済注文 "
+                                     f"OrderId={pending_oid} を取消対象に追加")
 
                 current = pos.current_price or self.symbol_api.get_current_price(code)
                 if current <= 0 or not targets["close_side"]:
@@ -424,10 +427,10 @@ class TradingEngine:
                     distance = current - stop_current
                 else:
                     distance = stop_current - current
-                print(f"  [返済判定] {code} {label}: 現在値={current}, "
-                      f"条件#5指値={limit_price}, 条件#6損切={stop_current}, "
-                      f"反転までの猶予={distance:.2f}, signal={signal}, "
-                      f"未約定返済注文={len(open_settle_ids)}件")
+                logger.debug(f"  [返済判定] {code} {label}: 現在値={current}, "
+                             f"条件#5指値={limit_price}, 条件#6損切={stop_current}, "
+                             f"反転までの猶予={distance:.2f}, signal={signal}, "
+                             f"未約定返済注文={len(open_settle_ids)}件")
                 if signal is None:
                     continue
 
@@ -447,18 +450,18 @@ class TradingEngine:
                         )
                         if fallback_ids:
                             open_settle_ids = fallback_ids
-                            print(f"  [返済判定補正] {code} {label}: 建玉ID紐付け外の未約定返済注文 "
-                                  f"{len(open_settle_ids)}件を取消対象に設定")
+                            logger.warning(f"  [返済判定補正] {code} {label}: 建玉ID紐付け外の未約定返済注文 "
+                                           f"{len(open_settle_ids)}件を取消対象に設定")
 
                     for oid in open_settle_ids:
-                        print(f"  [返済取消] {code} {label}: OrderId={oid} (条件#6成立)")
+                        logger.info(f"  [返済取消] {code} {label}: OrderId={oid} (条件#6成立)")
                         self.trade.cancel_order(oid)
                     if self.order_env() is None:
-                        print(f"  [DEV返済] {code} {label}: 成行 数量={settle_qty} "
-                              f"(損切り: 現在値{current})")
+                        logger.info(f"  [DEV返済] {code} {label}: 成行 数量={settle_qty} "
+                                    f"(損切り: 現在値{current})")
                         continue
                     close_positions = [{"HoldID": pos.hold_id, "Qty": settle_qty}]
-                    print(
+                    logger.info(
                         f"  [返済注文発行] {code} {label}: Side={targets['close_side']} "
                         f"成行 数量={settle_qty} Exchange={pos.exchange} "
                         f"MarginTradeType={pos.margin_trade_type or 3} "
@@ -494,11 +497,11 @@ class TradingEngine:
                         continue
                     limit_price = round_to_tick(targets["limit_price"], group)
                     if self.order_env() is None:
-                        print(f"  [DEV返済] {code} {label}: 指値{limit_price} 数量={settle_qty} "
-                              f"(spread_plus={row.spread_plus or 1}, spread_minus={row.spread_minus or 5})")
+                        logger.info(f"  [DEV返済] {code} {label}: 指値{limit_price} 数量={settle_qty} "
+                                    f"(spread_plus={row.spread_plus or 1}, spread_minus={row.spread_minus or 5})")
                         continue
                     close_positions = [{"HoldID": pos.hold_id, "Qty": settle_qty}]
-                    print(
+                    logger.info(
                         f"  [返済注文発行] {code} {label}: Side={targets['close_side']} "
                         f"指値{limit_price} 数量={settle_qty} Exchange={pos.exchange} "
                         f"MarginTradeType={pos.margin_trade_type or 3} "
@@ -517,16 +520,16 @@ class TradingEngine:
                     tag = f"返済注文(指値{limit_price})"
 
                 if result.ok:
-                    print(f"  [{tag}] {code} {label}: 数量={settle_qty} "
-                          f"OrderId={result.order_id} "
-                          f"(spread_plus={row.spread_plus or 1}, spread_minus={row.spread_minus or 5})")
+                    logger.info(f"  [{tag}] {code} {label}: 数量={settle_qty} "
+                                f"OrderId={result.order_id} "
+                                f"(spread_plus={row.spread_plus or 1}, spread_minus={row.spread_minus or 5})")
                     # 発注した返済注文を記憶し、次サイクルで建玉ID紐付けが取れなくても検出できるようにする
                     if result.order_id:
                         self.pending_settlements[pending_key] = result.order_id
                 else:
                     if result.is_one_shot_amount_error:
                         self._set_settle_cooldown(code, pos.hold_id)
-                        print(
+                        logger.error(
                             f"  [返済注文エラー(クールダウン)] {code} {label}: "
                             f"{result.one_shot_message}"
                         )
@@ -535,13 +538,13 @@ class TradingEngine:
                         # 既に返済注文が入っている（ポジションが返済中）可能性が高い。
                         # 連続した無駄な発注を避けるためクールダウンを設定する。
                         self._set_settle_cooldown(code, pos.hold_id)
-                        print(
+                        logger.error(
                             f"  [返済注文エラー(クールダウン)] {code} {label}: "
                             f"{result.message} "
                             f"(同じ建玉に対して既に未約定の返済注文がある可能性があります。"
                             f"{self.SETTLE_ERROR_COOLDOWN_CYCLES}サイクル間返済注文を抑制します)"
                         )
                     else:
-                        print(f"  [返済注文エラー] {code} {label}: {result.message}")
+                        logger.error(f"  [返済注文エラー] {code} {label}: {result.message}")
                     if result.request_body:
-                        print(f"  [返済注文リクエスト] {code} {label}: {result.request_body}")
+                        logger.debug(f"  [返済注文リクエスト] {code} {label}: {result.request_body}")

@@ -17,6 +17,9 @@ import time
 
 from .client import KabuApiClient
 from .exceptions import KabuApiException
+from .logger import get_logger
+
+logger = get_logger(__name__)
 
 SIDE_SELL = "1"
 SIDE_BUY = "2"
@@ -294,5 +297,5 @@ class KabuApiTrade:
             self.client.put("/cancelorder", {"OrderID": str(order_id)}, env=env)
             return True
         except Exception as e:
-            print(f"  [取消失敗] OrderId={order_id}: {e}")
+            logger.error(f"  [取消失敗] OrderId={order_id}: {e}")
             return False

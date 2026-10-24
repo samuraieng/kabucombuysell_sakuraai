@@ -12,6 +12,7 @@ class KabuApiConfig:
         KABU_API_PW_PROD  : 本番環境 (kabuステーションログインパスワード)
         KABU_API_PW_DEV   : 検証環境 (kabuステーションAPI検証用パスワード)
         KABU_API_LOG_DIR  : API通信ログ出力先 (default: /tmp/kabu_api_logs)
+        KABU_API_LOG_LEVEL: ログレベル (default: INFO)
     """
 
     BASE_PATH = "/kabusapi"

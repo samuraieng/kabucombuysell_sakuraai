@@ -9,8 +9,11 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass
 
-from kabu_api import KabuApiClient, KabuApiConfig, KabuApiException, KabuApiSymbol
+from kabu_api import KabuApiClient, KabuApiConfig, KabuApiException, KabuApiSymbol, setup_logging
+from kabu_api.logger import get_logger
 from kabu_api.positions import PRODUCT_CASH, PRODUCT_MARGIN, KabuApiPositions
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -137,6 +140,7 @@ def format_table(rows: list[StockRow]) -> str:
 
 
 def main() -> int:
+    setup_logging()
     try:
         config = KabuApiConfig()
         client = KabuApiClient(config)
@@ -144,13 +148,13 @@ def main() -> int:
         symbol_api = KabuApiSymbol(client)
         rows = StockRetriever(positions_api, symbol_api).retrieve(env="prod")
     except KabuApiException as e:
-        print(f"エラー: {e}", file=sys.stderr)
+        logger.error(f"エラー: {e}")
         return 1
     except Exception as e:  # pragma: no cover
-        print(f"予期しないエラー: {e}", file=sys.stderr)
+        logger.error(f"予期しないエラー: {e}")
         return 1
 
-    print(format_table(rows))
+    logger.info(format_table(rows))
     return 0
 
 
