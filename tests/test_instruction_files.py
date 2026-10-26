@@ -94,20 +94,27 @@ class TestSellList(unittest.TestCase):
 
 class TestRetList(unittest.TestCase):
     def test_load(self):
-        path = write_tmp("7203,10,50\n9433,,\n8306,0,0\n")
+        path = write_tmp("7203,10,50,5\n9433,,,\n8306,0,0,0\n5016,,\n")
         try:
             rl = RetList(path).load()
             self.assertEqual(rl.rows[0].spread_plus, 10.0)
             self.assertEqual(rl.rows[0].spread_minus, 50.0)
+            self.assertEqual(rl.rows[0].buffer_size, 5)
             self.assertEqual(rl.rows[1].spread_plus, 0.0)  # 空欄 → 0
             self.assertEqual(rl.rows[1].spread_minus, 0.0)
+            self.assertEqual(rl.rows[1].buffer_size, 0)    # 空欄 → 0
             self.assertEqual(rl.rows[2].spread_plus, 0.0)
             self.assertEqual(rl.rows[2].spread_minus, 0.0)
-            # effective_spread_plus: 呼値未取得時のフォールバック 1.0
+            self.assertEqual(rl.rows[2].buffer_size, 0)
+            self.assertEqual(rl.rows[3].buffer_size, 0)    # 列なし → 0
+            # effective_*: 呼値未取得時のフォールバック
             self.assertEqual(rl.rows[1].effective_spread_plus(), 1.0)
             self.assertEqual(rl.rows[1].effective_spread_minus(), 5.0)
+            self.assertEqual(rl.rows[1].effective_buffer_size(), 3)
             rl.rows[1].spread_plus = 5.0
+            rl.rows[1].buffer_size = 7
             self.assertEqual(rl.rows[1].effective_spread_plus(), 5.0)
+            self.assertEqual(rl.rows[1].effective_buffer_size(), 7)
         finally:
             os.unlink(path)
 

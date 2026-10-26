@@ -25,7 +25,7 @@ import sys
 
 from kabu_api import KabuApiConfig, TradingEngine, get_logger, setup_logging
 
-logger = get_logger(__name__)
+logger = get_logger("kabu_api.kabu_trade")
 
 
 def parse_args() -> argparse.Namespace:

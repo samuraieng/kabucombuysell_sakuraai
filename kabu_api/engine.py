@@ -9,7 +9,7 @@ from .conditions import buy_condition, sell_condition, settle_signal, settle_tar
 from .instruction_files import BuyList, NoSellList, RetList, SellList
 from .logger import get_logger
 from .orders import CASHMARGIN_SETTLE, KabuApiOrders
-from .positions import KabuApiPositions
+from .positions import CreditPosition, KabuApiPositions
 from .symbol_info import KabuApiSymbol, round_to_tick, tick_size
 from .trading import CASHMARGIN_CASH, CASHMARGIN_SETTLE, KabuApiTrade
 
@@ -108,6 +108,10 @@ class TradingEngine:
         # code:hold_id -> order_id: 自プロセスが発注した未約定返済注文
         self.pending_settlements: dict[str, str] = {}
         self.settle_error_cooldown: dict[str, int] = {}    # hold_id -> 残りクールダウンサイクル数
+        # code:hold_id -> list[int]: 条件#6-2 ヒストリ監視用バッファ
+        self.position_history: dict[str, list[int]] = {}
+        # code:hold_id -> datetime: 建玉の初認識時刻（条件#6-3 用）
+        self.position_first_seen: dict[str, datetime] = {}
 
     # ------------------------------------------------------------------
     # 起動時処理
@@ -125,7 +129,8 @@ class TradingEngine:
                 unit, group = self.symbol_api.unit_and_group(row.code)
                 logger.info(f"  [retlist] {row.code}: 売買単位={unit}, 呼値グループ={group}, "
                             f"spread_plus={row.spread_plus or 1}, "
-                            f"spread_minus={row.spread_minus or 5}")
+                            f"spread_minus={row.spread_minus or 5}, "
+                            f"buffer_size={row.effective_buffer_size()}")
             except Exception as e:
                 logger.warning(f"  [retlist警告] {row.code}: 銘柄情報取得失敗 ({e})")
 
@@ -162,6 +167,48 @@ class TradingEngine:
             del self.settle_error_cooldown[key]
         for key in self.settle_error_cooldown:
             self.settle_error_cooldown[key] -= 1
+
+    # ------------------------------------------------------------------
+    # 条件#6-3 建玉入手時刻
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _parse_execution_day(value: str) -> datetime | None:
+        """/positions の ExecutionDay を datetime に変換する。
+
+        時刻を含む形式を優先。日付のみの場合は時刻が不明なため None を返す。
+        """
+        value = str(value).strip()
+        time_formats = [
+            "%Y%m%d%H%M%S",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y%m%d%H%M%S%f",
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%dT%H:%M:%S.%f",
+        ]
+        for fmt in time_formats:
+            try:
+                return datetime.strptime(value, fmt)
+            except ValueError:
+                continue
+        # 日付のみは時刻が不明なので使わない
+        return None
+
+    def _position_start_time(self, pos: CreditPosition, key: str) -> datetime:
+        """建玉の起点時刻を返す。
+
+        /positions の ExecutionDay（時刻付き）があればそれを優先。
+        取得できなければ、エンジンがその建玉を最初に認識した時刻を使用。
+        """
+        if pos.execution_day:
+            dt = self._parse_execution_day(pos.execution_day)
+            if dt is not None:
+                return dt
+        return self.position_first_seen.get(key, datetime.now())
+
+    def _settle_elapsed_seconds(self, pos: CreditPosition, key: str) -> float:
+        """建玉入手（初認識）からの経過秒数を返す。"""
+        start = self._position_start_time(pos, key)
+        return (datetime.now() - start).total_seconds()
 
     # ------------------------------------------------------------------
     # ループ制御
@@ -232,6 +279,13 @@ class TradingEngine:
         logger.info(f"所有リスト: 現物 {len(self.holdings.cash)} 銘柄 / "
                     f"信用 {sum(len(v) for v in self.holdings.credit.values())} 建玉")
         self._print_credit_positions()
+
+        # 2.5) 信用建玉の初認識時刻を記録（条件#6-3 用）
+        for symbol, positions in self.holdings.credit.items():
+            for pos in positions:
+                key = self._settle_cooldown_key(symbol, pos.hold_id)
+                if key not in self.position_first_seen:
+                    self.position_first_seen[key] = datetime.now()
 
         # 3) 各事象を独立に処理
         self._check_buy_fills()
@@ -357,7 +411,7 @@ class TradingEngine:
     # 返済 (条件#5 / 条件#6)
     # ------------------------------------------------------------------
     def _process_settlements(self) -> None:
-        """retlist の信用建玉に対し条件#5 (指値返済) / #6 (損切り成行) を処理。"""
+        """retlist の信用建玉に対し条件#5 (指値返済) / #6 (損切り返済) を処理。"""
         for row in self.ret_list.active_rows():
             code = row.code
             positions = self.holdings.credit_positions(code)
@@ -376,6 +430,7 @@ class TradingEngine:
                     continue
 
                 label = {"2": "買建", "1": "売建"}.get(pos.side, "信用")
+                pending_key = self._settle_cooldown_key(code, pos.hold_id)
 
                 # 前回のワンショット金額エラーなどでクールダウン中ならスキップ
                 if self._is_settle_cooldown(code, pos.hold_id):
@@ -395,17 +450,16 @@ class TradingEngine:
                 tick = tick_size(
                     pos.price if pos.price > 0 else pos.current_price, group
                 )
-                spread_plus = (
-                    row.spread_plus * tick if row.spread_plus > 0 else tick
+                targets = settle_targets(
+                    pos.side,
+                    pos.price,
+                    row.effective_spread_plus(),
+                    row.effective_spread_minus(),
+                    tick=tick,
                 )
-                spread_minus = (
-                    row.spread_minus * tick if row.spread_minus > 0 else 5 * tick
-                )
-                targets = settle_targets(pos.side, pos.price, spread_plus, spread_minus)
 
                 # 自プロセスが発注した返済注文を記憶から補完
                 # (/orders の未約定レスポンスに HoldID/ExecutionID が含まれない場合の対策)
-                pending_key = self._settle_cooldown_key(code, pos.hold_id)
                 pending_oid = self.pending_settlements.get(pending_key)
                 if pending_oid and pending_oid not in open_settle_ids:
                     if self.orders_api.has_open_order(
@@ -418,28 +472,59 @@ class TradingEngine:
                 current = pos.current_price or self.symbol_api.get_current_price(code)
                 if current <= 0 or not targets["close_side"]:
                     continue
-                signal = settle_signal(targets, current)
 
-                limit_price = round_to_tick(targets["limit_price"], group)
-                stop_current = targets["stop_current"]
-                # 条件#6（反対指示・損切り）までの価格幅
-                if pos.side == "2":
-                    distance = current - stop_current
+                # 条件#6-2 ヒストリ監視 / #6-3 時間監視用の状態を取得
+                history = self.position_history.setdefault(pending_key, [])
+                buffer_size = row.effective_buffer_size()
+                # 仕様: 毎サイクル監視金額を割ったかどうかを 1/0 でバッファに追加
+                watch_price = targets.get("watch_price", 0.0)
+                if targets["close_side"] == "1":
+                    flag = 1 if (watch_price > 0 and current <= watch_price) else 0
                 else:
-                    distance = stop_current - current
-                logger.debug(f"  [返済判定] {code} {label}: 現在値={current}, "
-                             f"条件#5指値={limit_price}, 条件#6損切={stop_current}, "
-                             f"反転までの猶予={distance:.2f}, signal={signal}, "
-                             f"未約定返済注文={len(open_settle_ids)}件")
+                    flag = 1 if (watch_price > 0 and current >= watch_price) else 0
+                history.append(flag)
+                if len(history) > buffer_size:
+                    history[:] = history[-buffer_size:]
+
+                elapsed = self._settle_elapsed_seconds(pos, pending_key)
+                signal, reason = settle_signal(
+                    targets,
+                    current,
+                    history=history,
+                    buffer_size=buffer_size,
+                    elapsed_seconds=elapsed,
+                )
                 if signal is None:
                     continue
+
+                # 発注価格を決定
+                reason_to_price_key = {
+                    "6-1": "stop_current",
+                    "6-2": "stop_history",
+                    "6-3-3s": "stop_time_3s",
+                    "6-3-5s": "stop_time_5s",
+                    "5": "limit_price",
+                }
+                price_key = reason_to_price_key.get(reason, "limit_price")
+                order_price = targets.get(price_key, 0.0)
+                order_price = round_to_tick(order_price, group)
+                is_stop = signal == "market"
+
+                logger.debug(
+                    f"  [返済判定] {code} {label}: 現在値={current}, "
+                    f"条件#5指値={targets['limit_price']:.2f}, 条件#6-1損切={targets['stop_current']:.2f}, "
+                    f"条件#6-2監視={targets['watch_price']:.2f}, "
+                    f"条件#6-3(3s)={targets['stop_time_3s']:.2f}, 条件#6-3(5s)={targets['stop_time_5s']:.2f}, "
+                    f"signal={signal}, reason={reason}, "
+                    f"未約定返済注文={len(open_settle_ids)}件"
+                )
 
                 # 返済可能数量（拘束数量を除く）
                 available_qty = pos.qty - pos.hold_qty
 
-                if signal == "market":
-                    # 条件#6 → 建玉全体を成行返済。
-                    # 未約定返済注文があれば先に取消する（建玉ID紐付けが取れない場合は銘柄単位で探す）
+                if is_stop:
+                    # 条件#6 → 建玉全体を損切り金額で指値返済。
+                    # 未約定返済注文があれば先に取消する。
                     settle_qty = pos.qty
                     if settle_qty <= 0:
                         continue
@@ -454,16 +539,22 @@ class TradingEngine:
                                            f"{len(open_settle_ids)}件を取消対象に設定")
 
                     for oid in open_settle_ids:
-                        logger.info(f"  [返済取消] {code} {label}: OrderId={oid} (条件#6成立)")
+                        logger.info(f"  [返済取消] {code} {label}: OrderId={oid} (条件#6-{reason}成立)")
                         self.trade.cancel_order(oid)
                     if self.order_env() is None:
-                        logger.info(f"  [DEV返済] {code} {label}: 成行 数量={settle_qty} "
-                                    f"(損切り: 現在値{current})")
+                        reason_label = {
+                            "6-1": "強制返済",
+                            "6-2": "ヒストリ監視",
+                            "6-3-3s": "時間監視(3s)",
+                            "6-3-5s": "時間監視(5s)",
+                        }.get(reason, "損切り")
+                        logger.info(f"  [DEV返済] {code} {label}: 指値{order_price} 数量={settle_qty} "
+                                    f"({reason_label}: 現在値{current})")
                         continue
                     close_positions = [{"HoldID": pos.hold_id, "Qty": settle_qty}]
                     logger.info(
                         f"  [返済注文発行] {code} {label}: Side={targets['close_side']} "
-                        f"成行 数量={settle_qty} Exchange={pos.exchange} "
+                        f"指値{order_price} 数量={settle_qty} Exchange={pos.exchange} "
                         f"MarginTradeType={pos.margin_trade_type or 3} "
                         f"ClosePositions={close_positions}"
                     )
@@ -471,13 +562,13 @@ class TradingEngine:
                         code,
                         targets["close_side"],
                         settle_qty,
-                        price=0.0,
+                        price=order_price,
                         close_positions=close_positions,
                         margin_trade_type=pos.margin_trade_type or 3,
                         exchange=pos.exchange,
                         env=self.order_env(),
                     )
-                    tag = "返済注文(成行)"
+                    tag = f"返済注文(指値{order_price})"
                 else:
                     # 条件#5 → 指値返済
                     # 建玉IDに紐づく未約定返済注文があればスキップ
@@ -495,15 +586,14 @@ class TradingEngine:
                         settle_qty = available_qty
                     if settle_qty <= 0:
                         continue
-                    limit_price = round_to_tick(targets["limit_price"], group)
                     if self.order_env() is None:
-                        logger.info(f"  [DEV返済] {code} {label}: 指値{limit_price} 数量={settle_qty} "
+                        logger.info(f"  [DEV返済] {code} {label}: 指値{order_price} 数量={settle_qty} "
                                     f"(spread_plus={row.spread_plus or 1}, spread_minus={row.spread_minus or 5})")
                         continue
                     close_positions = [{"HoldID": pos.hold_id, "Qty": settle_qty}]
                     logger.info(
                         f"  [返済注文発行] {code} {label}: Side={targets['close_side']} "
-                        f"指値{limit_price} 数量={settle_qty} Exchange={pos.exchange} "
+                        f"指値{order_price} 数量={settle_qty} Exchange={pos.exchange} "
                         f"MarginTradeType={pos.margin_trade_type or 3} "
                         f"ClosePositions={close_positions}"
                     )
@@ -511,13 +601,13 @@ class TradingEngine:
                         code,
                         targets["close_side"],
                         settle_qty,
-                        price=limit_price,
+                        price=order_price,
                         close_positions=close_positions,
                         margin_trade_type=pos.margin_trade_type or 3,
                         exchange=pos.exchange,
                         env=self.order_env(),
                     )
-                    tag = f"返済注文(指値{limit_price})"
+                    tag = f"返済注文(指値{order_price})"
 
                 if result.ok:
                     logger.info(f"  [{tag}] {code} {label}: 数量={settle_qty} "

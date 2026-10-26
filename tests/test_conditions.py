@@ -52,6 +52,10 @@ class TestSettleTargets(unittest.TestCase):
         self.assertEqual(t["close_side"], "1")
         self.assertAlmostEqual(t["limit_price"], 1010.0)
         self.assertAlmostEqual(t["stop_current"], 950.0)
+        self.assertAlmostEqual(t["watch_price"], 999.0)      # price - tick
+        self.assertAlmostEqual(t["stop_history"], 999.0)
+        self.assertAlmostEqual(t["stop_time_3s"], 1000.0)
+        self.assertAlmostEqual(t["stop_time_5s"], 700.0)     # 1000 - 50*6
 
     def test_short_position(self):
         # 売建 (Side=1): 確定売値-spread_plus で買い返済 / 確定売値+spread_minus で損切り
@@ -59,10 +63,14 @@ class TestSettleTargets(unittest.TestCase):
         self.assertEqual(t["close_side"], "2")
         self.assertAlmostEqual(t["limit_price"], 990.0)
         self.assertAlmostEqual(t["stop_current"], 1050.0)
+        self.assertAlmostEqual(t["watch_price"], 1001.0)
+        self.assertAlmostEqual(t["stop_history"], 1001.0)
+        self.assertAlmostEqual(t["stop_time_3s"], 1000.0)
+        self.assertAlmostEqual(t["stop_time_5s"], 1300.0)
 
     def test_spec_example(self):
-        # 仕様例: 買値1000, spread_plus=1, spread_minus=5 → +1円で売 / -5円で損切り
-        t = settle_targets("2", 1000.0, 1.0, 5.0)
+        # 仕様例: 買値1000, spread_plus=1, spread_minus=5, tick=1 → +1円で売 / -5円で損切り
+        t = settle_targets("2", 1000.0, 1.0, 5.0, tick=1.0)
         self.assertAlmostEqual(t["limit_price"], 1001.0)
         self.assertAlmostEqual(t["stop_current"], 995.0)
 
@@ -74,28 +82,91 @@ class TestSettleTargets(unittest.TestCase):
 class TestSettleSignal(unittest.TestCase):
     def test_stop_market_long(self):
         t = settle_targets("2", 1000.0, 10.0, 50.0)
-        self.assertEqual(settle_signal(t, 950.0), "market")
-        self.assertEqual(settle_signal(t, 949.0), "market")
+        self.assertEqual(settle_signal(t, 950.0), ("market", "6-1"))
+        self.assertEqual(settle_signal(t, 949.0), ("market", "6-1"))
 
     def test_limit_long(self):
         t = settle_targets("2", 1000.0, 10.0, 50.0)
-        self.assertEqual(settle_signal(t, 1000.0), "limit")
-        self.assertEqual(settle_signal(t, 900.0), "market")  # 損切り優先
+        self.assertEqual(settle_signal(t, 1000.0), ("limit", "5"))
+        self.assertEqual(settle_signal(t, 900.0), ("market", "6-1"))  # 損切り優先
 
     def test_stop_market_short(self):
         t = settle_targets("1", 1000.0, 10.0, 50.0)
-        self.assertEqual(settle_signal(t, 1050.0), "market")
+        self.assertEqual(settle_signal(t, 1050.0), ("market", "6-1"))
 
     def test_no_signal(self):
         t = settle_targets("2", 1000.0, 10.0, 50.0)
         # 条件#5 は「即時、返済金額で指す」が常時成立 (指値返済を維持)
-        self.assertEqual(settle_signal(t, 1005.0), "limit")
-        self.assertEqual(settle_signal(t, 900.0), "market")  # 損切り優先
+        self.assertEqual(settle_signal(t, 1005.0), ("limit", "5"))
+        self.assertEqual(settle_signal(t, 900.0), ("market", "6-1"))  # 損切り優先
         # 指値が0以下 (売建の確定売値 < spread_plus) は指値不可 → 条件#6に達していなければ発動しない
         t2 = settle_targets("1", 5.0, 10.0, 50.0)
-        self.assertIsNone(settle_signal(t2, 10.0))
-        # ただし損切りライン (確定売値+spread_minus=55円) を超えれば成行損切り
-        self.assertEqual(settle_signal(t2, 100.0), "market")
+        self.assertEqual(settle_signal(t2, 10.0), (None, None))
+        # ただし損切りライン (確定売値+spread_minus=55円) を超えれば損切り
+        self.assertEqual(settle_signal(t2, 100.0), ("market", "6-1"))
+
+    def test_history_stop_long(self):
+        # 買建: 監視金額 999 を割れば buffer に 1。buffer_size=3 で 2 回連続で発火
+        t = settle_targets("2", 1000.0, 10.0, 50.0)
+        history: list[int] = []
+        history.append(1)  # current=999 のフラグ（呼び出し側が更新）
+        self.assertEqual(settle_signal(t, 999.0, history=history, buffer_size=3), ("limit", "5"))
+        history.append(1)  # 2回目
+        self.assertEqual(settle_signal(t, 999.0, history=history, buffer_size=3), ("market", "6-2"))
+        self.assertEqual(history, [1, 1])
+
+    def test_history_stop_short(self):
+        # 売建: 監視金額 1001 を超えれば buffer に 1
+        t = settle_targets("1", 1000.0, 10.0, 50.0)
+        history: list[int] = []
+        history.append(1)
+        self.assertEqual(settle_signal(t, 1001.0, history=history, buffer_size=3), ("limit", "5"))
+        history.append(1)
+        self.assertEqual(settle_signal(t, 1001.0, history=history, buffer_size=3), ("market", "6-2"))
+
+    def test_history_buffer_no_update(self):
+        # settle_signal は history を更新しない（呼び出し側が更新する）
+        t = settle_targets("2", 1000.0, 10.0, 50.0)
+        history: list[int] = []
+        settle_signal(t, 999.0, history=history, buffer_size=3)
+        self.assertEqual(history, [])
+
+    def test_history_zero_fills_buffer(self):
+        # 条件を満たさないサイクルでは 0、満たすサイクルでは 1 が追加される（呼び出し側で）
+        t = settle_targets("2", 1000.0, 10.0, 50.0)
+        history: list[int] = [0, 1]
+        self.assertEqual(settle_signal(t, 1000.0, history=history, buffer_size=3), ("limit", "5"))
+        history.append(1)  # [0, 1, 1] で過半数に達し発火
+        self.assertEqual(settle_signal(t, 999.0, history=history, buffer_size=3), ("market", "6-2"))
+
+    def test_time_stop_3s_long(self):
+        t = settle_targets("2", 1000.0, 10.0, 50.0)
+        # 3秒経過で建玉価格（1000）を割れば損切り
+        self.assertEqual(settle_signal(t, 999.0, elapsed_seconds=3.0), ("market", "6-3-3s"))
+        # 3秒未満では条件#5
+        self.assertEqual(settle_signal(t, 999.0, elapsed_seconds=2.9), ("limit", "5"))
+
+    def test_time_stop_5s_long(self):
+        t = settle_targets("2", 1000.0, 10.0, 5.0)
+        # 5秒経過で強い損切り（970）を割れば発火
+        self.assertEqual(settle_signal(t, 969.0, elapsed_seconds=5.0), ("market", "6-3-5s"))
+        # 5秒経過でも 6-1(995) と 6-3-5s(970) の両方を割らなければ条件#5
+        self.assertEqual(settle_signal(t, 996.0, elapsed_seconds=5.0), ("limit", "5"))
+
+    def test_multiple_conditions_pick_worst(self):
+        # 買建: 6-1(950) と 6-3-5s(700) が両方発火する場合、より不利な 6-3-5s を選択
+        t = settle_targets("2", 1000.0, 10.0, 50.0)
+        signal, reason = settle_signal(t, 600.0, elapsed_seconds=5.0)
+        self.assertEqual(signal, "market")
+        self.assertEqual(reason, "6-3-5s")
+
+    def test_history_and_time_prefer_worst(self):
+        # 買建: 6-2(999) と 6-3-3s(1000) が両方発火する場合、より不利な 6-2 を選択
+        t = settle_targets("2", 1000.0, 10.0, 50.0)
+        history: list[int] = [1, 1]  # 既に過半数が1
+        signal, reason = settle_signal(t, 999.0, history=history, buffer_size=3, elapsed_seconds=3.0)
+        self.assertEqual(signal, "market")
+        self.assertEqual(reason, "6-2")
 
 
 class TestTickSize(unittest.TestCase):

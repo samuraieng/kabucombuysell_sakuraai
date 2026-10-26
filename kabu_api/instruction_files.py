@@ -110,15 +110,17 @@ class SellRow:
 
 @dataclass
 class RetRow:
-    """list_ret.txt の1行: code, spread_plus, spread_minus。
+    """list_ret.txt の1行: code, spread_plus, spread_minus, buffer_size。
 
     spread_plus:  利確幅の呼値単位倍数。空欄/0 → 1（呼値単位×1）。
     spread_minus: 損切幅の呼値単位倍数。空欄/0 → 5（呼値単位×5）。
+    buffer_size:  条件#6-2（ヒストリ監視）で使用する履歴バッファサイズ。空欄/0 → 3。
     """
 
     code: str
     spread_plus: float       # 利確幅の呼値単位倍数
     spread_minus: float      # 損切幅の呼値単位倍数
+    buffer_size: int         # 条件#6-2 ヒストリ監視のバッファサイズ
     line_no: int
     raw_line: str
     tick: float = 0.0        # 読み込み時に /symbol から取得した呼値単位
@@ -135,6 +137,12 @@ class RetRow:
         if self.spread_minus and self.spread_minus > 0:
             return self.spread_minus
         return 5.0
+
+    def effective_buffer_size(self) -> int:
+        """実効ヒストリバッファサイズを返す (0指定時は3)。"""
+        if self.buffer_size and self.buffer_size > 0:
+            return self.buffer_size
+        return 3
 
 
 @dataclass
@@ -258,7 +266,7 @@ class SellList(InstructionFile):
 
 
 class RetList(InstructionFile):
-    """list_ret.txt: code, spread_plus, spread_minus"""
+    """list_ret.txt: code, spread_plus, spread_minus, buffer_size"""
 
     def _parse(self, fields: list[str], line_no: int, raw_line: str):
         if len(fields) < 1:
@@ -266,12 +274,16 @@ class RetList(InstructionFile):
         code = fields[0]
         spread_plus = to_float(fields[1]) if len(fields) >= 2 else None
         spread_minus = to_float(fields[2]) if len(fields) >= 3 else None
+        buffer_size = to_int(fields[3]) if len(fields) >= 4 else None
         if spread_plus is None:
             spread_plus = 0.0
         if spread_minus is None:
             spread_minus = 0.0
+        if buffer_size is None:
+            buffer_size = 0
         return RetRow(
             code=code, spread_plus=spread_plus, spread_minus=spread_minus,
+            buffer_size=buffer_size,
             line_no=line_no, raw_line=raw_line,
         )
 
@@ -283,9 +295,9 @@ class NoSellList(InstructionFile):
         if not CODE_RE.match(fields[0]):
             logger.warning(f"  [警告] {self.path} 行{line_no}: 銘柄コード不正 → スキップ")
             return None
-        # 単純化のため RetRow 形式を流用 (spread_plus/spread_minus 未使用)
+        # 単純化のため RetRow 形式を流用 (spread_plus/spread_minus/buffer_size 未使用)
         return RetRow(
-            code=fields[0], spread_plus=0.0, spread_minus=0.0,
+            code=fields[0], spread_plus=0.0, spread_minus=0.0, buffer_size=0,
             line_no=line_no, raw_line=raw_line,
         )
 

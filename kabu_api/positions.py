@@ -37,6 +37,7 @@ class CreditPosition:
     margin_trade_type: int = 0  # 1=制度 / 2=一般(長期) / 3=一般(デイトレ)
     hold_qty: int = 0     # 拘束数量
     exchange: int = 9     # 建玉市場 (1=東証 / 27=東証+ / 9=SOR 等)
+    execution_day: str | None = None  # 約定日 (ExecutionDay)
 
 
 @dataclass
@@ -137,6 +138,7 @@ class KabuApiPositions:
             qty = int(p.get("LeavesQty") or 0)
             if not symbol or qty <= 0:
                 continue
+            execution_day = p.get("ExecutionDay")
             pos = CreditPosition(
                 hold_id=str(p.get("ExecutionID") or ""),
                 symbol=symbol,
@@ -149,6 +151,7 @@ class KabuApiPositions:
                 margin_trade_type=int(p.get("MarginTradeType") or 0),
                 hold_qty=int(p.get("HoldQty") or 0),
                 exchange=int(p.get("Exchange") or 9),
+                execution_day=str(execution_day) if execution_day is not None else None,
             )
             holdings.credit.setdefault(symbol, []).append(pos)
 

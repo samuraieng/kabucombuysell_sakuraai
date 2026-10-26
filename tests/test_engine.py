@@ -302,8 +302,8 @@ class TestSettlementProcessing(unittest.TestCase):
             self.assertEqual(settles[0][1]["close_side"], "2")     # 買い返済
             self.assertEqual(settles[0][1]["price"], 1990.0)
 
-    def test_stop_loss_market_cancels(self):
-        # 買建 1000円, spread 10 → 現在値 950 で損切り (取消 + 成行)
+    def test_stop_loss_limit_cancels(self):
+        # 買建 1000円, spread 10 → 現在値 950 で条件#6-1 損切り (取消 + 指値950)
         with tempfile.TemporaryDirectory() as d:
             e = make_engine(
                 d, "", ret_content="7203,10,50\n",
@@ -317,13 +317,13 @@ class TestSettlementProcessing(unittest.TestCase):
             settles = [c for c in e.trade.calls if c[0] == "credit_settle"]
             self.assertEqual(len(cancels), 1)
             self.assertEqual(len(settles), 1)
-            self.assertEqual(settles[0][1]["price"], 0.0)          # 成行
+            self.assertEqual(settles[0][1]["price"], 950.0)        # 損切り金額で指値
             self.assertEqual(settles[0][1]["close_side"], "1")
 
 
     def test_stop_loss_when_fully_held(self):
         # 条件#5 の指値注文が出済みで建玉全体が拘束中（hold_qty == qty）でも、
-        # 条件#6 が成立すれば未約定注文を取消して成行返済する
+        # 条件#6 が成立すれば未約定注文を取消して損切り指値返済する
         with tempfile.TemporaryDirectory() as d:
             e = make_engine(
                 d, "", ret_content="7203,10,50\n",
@@ -341,7 +341,7 @@ class TestSettlementProcessing(unittest.TestCase):
 
     def test_stop_loss_falls_back_to_symbol_level_orders(self):
         # 建玉IDに紐づく未約定返済注文が検出できない場合でも、
-        # 銘柄単位の未約定返済注文を取消して成行返済する
+        # 銘柄単位の未約定返済注文を取消して損切り指値返済する
         with tempfile.TemporaryDirectory() as d:
             e = make_engine(
                 d, "", ret_content="5016,,\n",
@@ -358,7 +358,8 @@ class TestSettlementProcessing(unittest.TestCase):
             self.assertEqual(len(cancels), 1)
             self.assertEqual(cancels[0][1]["order_id"], "OPEN_F1")
             self.assertEqual(len(settles), 1)
-            self.assertEqual(settles[0][1]["price"], 0.0)          # 成行
+            # 売建 3560, spread_minus=5, tick=1 → stop_current=3565
+            self.assertEqual(settles[0][1]["price"], 3565.0)
             self.assertEqual(settles[0][1]["qty"], 100)            # 全建玉を返済
             self.assertEqual(settles[0][1]["close_side"], "2")     # 買い返済
 
@@ -376,7 +377,7 @@ class TestSettlementProcessing(unittest.TestCase):
             self.assertEqual(settles[0][1]["price"], 1001.0)
 
     def test_stop_loss_ignores_hold_qty_when_no_open_order(self):
-        # hold_qty == qty でも未約定返済注文がなければ、条件#6 で成行返済する
+        # hold_qty == qty でも未約定返済注文がなければ、条件#6 で損切り指値返済する
         with tempfile.TemporaryDirectory() as d:
             e = make_engine(
                 d, "", ret_content="5016,,\n",
@@ -391,7 +392,7 @@ class TestSettlementProcessing(unittest.TestCase):
             settles = [c for c in e.trade.calls if c[0] == "credit_settle"]
             self.assertEqual(len(cancels), 0)                       # 取消対象がない
             self.assertEqual(len(settles), 1)
-            self.assertEqual(settles[0][1]["price"], 0.0)          # 成行
+            self.assertEqual(settles[0][1]["price"], 3565.0)       # 損切り指値
             self.assertEqual(settles[0][1]["qty"], 100)
             self.assertEqual(settles[0][1]["close_side"], "2")     # 買い返済
 
@@ -414,6 +415,71 @@ class TestSettlementProcessing(unittest.TestCase):
             e.run_cycle()
             settles = [c for c in e.trade.calls if c[0] == "credit_settle"]
             self.assertEqual(len(settles), 0)  # 指値返済済み → 追加発注しない
+
+    def test_history_stop_loss(self):
+        # 買建 1000円, buffer_size=3, 監視金額 999 → 2サイクル連続で発火
+        # 未約定返済注文があるため条件#5はスキップされ、history が更新される
+        with tempfile.TemporaryDirectory() as d:
+            e = make_engine(
+                d, "", ret_content="7203,10,50,3\n",
+                holdings=make_holdings(credit=[
+                    CreditPosition(hold_id="E123", symbol="7203", side="2",
+                                   price=1000.0, qty=100, current_price=999.0, margin_trade_type=3),
+                ]),
+                open_by_hold_id={("7203", "E123"): ["OPEN1"]},
+            )
+            # 1サイクル目: buffer [1] → まだ発火しない
+            e.run_cycle()
+            settles = [c for c in e.trade.calls if c[0] == "credit_settle"]
+            self.assertEqual(len(settles), 0)
+
+            # 2サイクル目: buffer [1, 1] → 過半数で条件#6-2 発火
+            e.run_cycle()
+            settles = [c for c in e.trade.calls if c[0] == "credit_settle"]
+            self.assertEqual(len(settles), 1)
+            self.assertEqual(settles[0][1]["price"], 999.0)  # stop_history
+            self.assertEqual(settles[0][1]["close_side"], "1")
+
+    def test_time_stop_loss_3s(self):
+        # 買建 1000円 → 3秒経過で建玉価格(1000)を割れば条件#6-3 発火
+        with tempfile.TemporaryDirectory() as d:
+            from datetime import datetime, timedelta
+            e = make_engine(
+                d, "", ret_content="7203,10,50\n",
+                holdings=make_holdings(credit=[
+                    CreditPosition(hold_id="E123", symbol="7203", side="2",
+                                   price=1000.0, qty=100, current_price=999.0, margin_trade_type=3),
+                ]),
+            )
+            # 初認識時刻を 4秒前に設定
+            key = "7203:E123"
+            e.position_first_seen[key] = datetime.now() - timedelta(seconds=4)
+            e.run_cycle()
+            settles = [c for c in e.trade.calls if c[0] == "credit_settle"]
+            self.assertEqual(len(settles), 1)
+            # 買建の条件#6-3(3s) 損切り金額 = 建玉価格 = 1000.0
+            self.assertEqual(settles[0][1]["price"], 1000.0)
+            self.assertEqual(settles[0][1]["close_side"], "1")
+
+    def test_time_stop_loss_5s(self):
+        # 買建 1000円, spread_minus=5, tick=1 → 5秒経過で 970 以下なら条件#6-3-5s 発火
+        with tempfile.TemporaryDirectory() as d:
+            from datetime import datetime, timedelta
+            e = make_engine(
+                d, "", ret_content="7203,10,5\n",
+                holdings=make_holdings(credit=[
+                    CreditPosition(hold_id="E123", symbol="7203", side="2",
+                                   price=1000.0, qty=100, current_price=969.0, margin_trade_type=3),
+                ]),
+            )
+            key = "7203:E123"
+            e.position_first_seen[key] = datetime.now() - timedelta(seconds=6)
+            e.run_cycle()
+            settles = [c for c in e.trade.calls if c[0] == "credit_settle"]
+            self.assertEqual(len(settles), 1)
+            # stop_time_5s = 1000 - (5*1)*6 = 970
+            self.assertEqual(settles[0][1]["price"], 970.0)
+            self.assertEqual(settles[0][1]["close_side"], "1")
 
 
 class TestSettlementOneShotCooldown(unittest.TestCase):

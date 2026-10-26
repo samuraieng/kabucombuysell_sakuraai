@@ -13,7 +13,7 @@ from kabu_api import KabuApiClient, KabuApiConfig, KabuApiException, KabuApiSymb
 from kabu_api.logger import get_logger
 from kabu_api.positions import PRODUCT_CASH, PRODUCT_MARGIN, KabuApiPositions
 
-logger = get_logger(__name__)
+logger = get_logger("kabu_api.get_stocks")
 
 
 @dataclass
