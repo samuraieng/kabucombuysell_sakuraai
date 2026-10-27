@@ -9,7 +9,7 @@
 書式 (カラム):
     list_buy.txt  : code, price, qty, trigger_price
     list_sell.txt : code, price, qty, trigger_price
-    list_ret.txt  : code, spread_plus, spread_minus
+    list_ret.txt  : code, spread_plus, spread_minus, spread_minus_max, count_max
     list_no_sell.txt : code (1行1コード)
 """
 
@@ -110,15 +110,19 @@ class SellRow:
 
 @dataclass
 class RetRow:
-    """list_ret.txt の1行: code, spread_plus, spread_minus。
+    """list_ret.txt の1行: code, spread_plus, spread_minus, spread_minus_max, count_max。
 
-    spread_plus:  利確幅の呼値単位倍数。空欄/0 → 1（呼値単位×1）。
-    spread_minus: 損切幅の呼値単位倍数。空欄/0 → 5（呼値単位×5）。
+    spread_plus:        利確幅の呼値単位倍数。空欄/0 → 1（呼値単位×1）。
+    spread_minus:       条件#6-2 ヒストリ監視の監視幅の呼値単位倍数。空欄/0 → 2。
+    spread_minus_max:   条件#6-1 強制返済の損切り幅の呼値単位倍数。空欄/0 → spread_minus の値。
+    count_max:          条件#6-2 の n-strike-out カウント。空欄/0 → 3。
     """
 
     code: str
     spread_plus: float       # 利確幅の呼値単位倍数
-    spread_minus: float      # 損切幅の呼値単位倍数
+    spread_minus: float      # 条件#6-2 監視幅の呼値単位倍数
+    spread_minus_max: float  # 条件#6-1 強制返済幅の呼値単位倍数
+    count_max: int           # 条件#6-2 の n-strike-out カウント
     line_no: int
     raw_line: str
     tick: float = 0.0        # 読み込み時に /symbol から取得した呼値単位
@@ -131,10 +135,31 @@ class RetRow:
         return 1.0
 
     def effective_spread_minus(self) -> float:
-        """実効損切幅（呼値単位倍数）を返す (0指定時は5)。"""
+        """実効監視幅（呼値単位倍数）を返す (0指定時は2)。"""
         if self.spread_minus and self.spread_minus > 0:
             return self.spread_minus
-        return 5.0
+        return 2.0
+
+    def effective_spread_minus_max(self) -> float:
+        """実効強制返済幅（呼値単位倍数）を返す (0指定時は spread_minus の値)。"""
+        if self.spread_minus_max and self.spread_minus_max > 0:
+            return self.spread_minus_max
+        return self.effective_spread_minus()
+
+    def effective_count_max(self) -> int:
+        """実効 n-strike-out カウントを返す (0指定時は3)。"""
+        if self.count_max and self.count_max > 0:
+            return self.count_max
+        return 3
+
+    def normalized_spreads(self) -> tuple[float, float]:
+        """spread_minus と spread_minus_max の大小関係を正規化して返す。
+
+        spread_minus > spread_minus_max の場合は入れ替える。
+        """
+        sm = self.effective_spread_minus()
+        smm = self.effective_spread_minus_max()
+        return min(sm, smm), max(sm, smm)
 
 
 @dataclass
@@ -258,7 +283,7 @@ class SellList(InstructionFile):
 
 
 class RetList(InstructionFile):
-    """list_ret.txt: code, spread_plus, spread_minus"""
+    """list_ret.txt: code, spread_plus, spread_minus, spread_minus_max, count_max"""
 
     def _parse(self, fields: list[str], line_no: int, raw_line: str):
         if len(fields) < 1:
@@ -266,12 +291,19 @@ class RetList(InstructionFile):
         code = fields[0]
         spread_plus = to_float(fields[1]) if len(fields) >= 2 else None
         spread_minus = to_float(fields[2]) if len(fields) >= 3 else None
+        spread_minus_max = to_float(fields[3]) if len(fields) >= 4 else None
+        count_max = to_int(fields[4]) if len(fields) >= 5 else None
         if spread_plus is None:
             spread_plus = 0.0
         if spread_minus is None:
             spread_minus = 0.0
+        if spread_minus_max is None:
+            spread_minus_max = 0.0
+        if count_max is None:
+            count_max = 0
         return RetRow(
             code=code, spread_plus=spread_plus, spread_minus=spread_minus,
+            spread_minus_max=spread_minus_max, count_max=count_max,
             line_no=line_no, raw_line=raw_line,
         )
 
@@ -283,9 +315,10 @@ class NoSellList(InstructionFile):
         if not CODE_RE.match(fields[0]):
             logger.warning(f"  [警告] {self.path} 行{line_no}: 銘柄コード不正 → スキップ")
             return None
-        # 単純化のため RetRow 形式を流用 (spread_plus/spread_minus 未使用)
+        # 単純化のため RetRow 形式を流用 (spread_* / count_max は未使用)
         return RetRow(
             code=fields[0], spread_plus=0.0, spread_minus=0.0,
+            spread_minus_max=0.0, count_max=0,
             line_no=line_no, raw_line=raw_line,
         )
 

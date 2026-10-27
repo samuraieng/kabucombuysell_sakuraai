@@ -303,12 +303,13 @@ class TestSettlementProcessing(unittest.TestCase):
             self.assertEqual(settles[0][1]["price"], 1990.0)
 
     def test_stop_loss_market_cancels(self):
-        # 買建 1000円, spread 10 → 現在値 950 で損切り (取消 + 成行)
+        # 買建 1000円, spread_plus=10, spread_minus=2, spread_minus_max=6, count_max=1
+        # 現在値 995 で条件#6-2 初回ヒット→成行 (取消 + 成行)
         with tempfile.TemporaryDirectory() as d:
             e = make_engine(
-                d, "", ret_content="7203,10,50\n",
+                d, "", ret_content="7203,10,2,6,1\n",
                 holdings=make_holdings(credit=[
-                    CreditPosition(hold_id="E123", symbol="7203", side="2", price=1000.0, qty=100, current_price=950.0, margin_trade_type=3),
+                    CreditPosition(hold_id="E123", symbol="7203", side="2", price=1000.0, qty=100, current_price=995.0, margin_trade_type=3),
                 ]),
                 open_by_hold_id={("7203", "E123"): ["OPEN1"]},
             )
@@ -341,13 +342,13 @@ class TestSettlementProcessing(unittest.TestCase):
 
     def test_stop_loss_falls_back_to_symbol_level_orders(self):
         # 建玉IDに紐づく未約定返済注文が検出できない場合でも、
-        # 銘柄単位の未約定返済注文を取消して成行返済する
+        # 銘柄単位の未約定返済注文を取消して条件#6-2 成行返済する
         with tempfile.TemporaryDirectory() as d:
             e = make_engine(
-                d, "", ret_content="5016,,\n",
+                d, "", ret_content="5016,10,2,10,1\n",
                 holdings=make_holdings(credit=[
                     CreditPosition(hold_id="E5016", symbol="5016", side="1", price=3560.0,
-                                   qty=100, hold_qty=100, current_price=3566.0, margin_trade_type=3),
+                                   qty=100, hold_qty=100, current_price=3567.0, margin_trade_type=3),
                 ]),
                 groups={"5016": (100, "10003")},  # TOPIX500: 3560円 → tick=1
                 open_ids={"5016": ["OPEN_F1"]},
@@ -376,13 +377,13 @@ class TestSettlementProcessing(unittest.TestCase):
             self.assertEqual(settles[0][1]["price"], 1001.0)
 
     def test_stop_loss_ignores_hold_qty_when_no_open_order(self):
-        # hold_qty == qty でも未約定返済注文がなければ、条件#6 で成行返済する
+        # hold_qty == qty でも未約定返済注文がなければ、条件#6-2 で成行返済する
         with tempfile.TemporaryDirectory() as d:
             e = make_engine(
-                d, "", ret_content="5016,,\n",
+                d, "", ret_content="5016,10,2,10,1\n",
                 holdings=make_holdings(credit=[
                     CreditPosition(hold_id="E5016", symbol="5016", side="1", price=3560.0,
-                                   qty=100, hold_qty=100, current_price=3566.0, margin_trade_type=3),
+                                   qty=100, hold_qty=100, current_price=3567.0, margin_trade_type=3),
                 ]),
                 groups={"5016": (100, "10003")},
             )
@@ -459,7 +460,7 @@ class TestSettlementOneShotCooldown(unittest.TestCase):
             )
             trade = FakeTrade(settle_responses=[error_result, OrderResult(ok=True)])
             e = make_engine(
-                d, "", ret_content="285A,,\n",
+                d, "", ret_content="285A,100,50,,\n",
                 holdings=make_holdings(credit=[
                     CreditPosition(hold_id="E285A", symbol="285A", side="1", price=17130.0,
                                    qty=100, current_price=17170.0, margin_trade_type=3),

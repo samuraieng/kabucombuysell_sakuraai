@@ -94,20 +94,34 @@ class TestSellList(unittest.TestCase):
 
 class TestRetList(unittest.TestCase):
     def test_load(self):
-        path = write_tmp("7203,10,50\n9433,,\n8306,0,0\n")
+        path = write_tmp("7203,10,2,6,3\n9433,,,\n8306,0,0,0,0\n")
         try:
             rl = RetList(path).load()
             self.assertEqual(rl.rows[0].spread_plus, 10.0)
-            self.assertEqual(rl.rows[0].spread_minus, 50.0)
+            self.assertEqual(rl.rows[0].spread_minus, 2.0)
+            self.assertEqual(rl.rows[0].spread_minus_max, 6.0)
+            self.assertEqual(rl.rows[0].count_max, 3)
             self.assertEqual(rl.rows[1].spread_plus, 0.0)  # 空欄 → 0
             self.assertEqual(rl.rows[1].spread_minus, 0.0)
+            self.assertEqual(rl.rows[1].spread_minus_max, 0.0)
+            self.assertEqual(rl.rows[1].count_max, 0)
             self.assertEqual(rl.rows[2].spread_plus, 0.0)
             self.assertEqual(rl.rows[2].spread_minus, 0.0)
-            # effective_spread_plus: 呼値未取得時のフォールバック 1.0
+            self.assertEqual(rl.rows[2].spread_minus_max, 0.0)
+            self.assertEqual(rl.rows[2].count_max, 0)
+            # effective_*: 呼値未取得時のフォールバック
             self.assertEqual(rl.rows[1].effective_spread_plus(), 1.0)
-            self.assertEqual(rl.rows[1].effective_spread_minus(), 5.0)
+            self.assertEqual(rl.rows[1].effective_spread_minus(), 2.0)
+            self.assertEqual(rl.rows[1].effective_spread_minus_max(), 2.0)
+            self.assertEqual(rl.rows[1].effective_count_max(), 3)
             rl.rows[1].spread_plus = 5.0
             self.assertEqual(rl.rows[1].effective_spread_plus(), 5.0)
+            # normalized_spreads: spread_minus > spread_minus_max の場合は入れ替える
+            rl.rows[1].spread_minus = 10.0
+            rl.rows[1].spread_minus_max = 3.0
+            sm, smm = rl.rows[1].normalized_spreads()
+            self.assertEqual(sm, 3.0)
+            self.assertEqual(smm, 10.0)
         finally:
             os.unlink(path)
 

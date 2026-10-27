@@ -212,7 +212,8 @@ class KabuApiTrade:
             close_side: 返済方向 ("1"=返済売(買建玉の解消) / "2"=返済買(売建玉の解消))
             qty: 返済数量
             price: 指値価格 (0 なら成行)
-            close_positions: [{"HoldID": "E...", "Qty": n}] (建玉指定)
+            close_positions: [{"HoldID": "E...", "Qty": n}] (建玉指定)。
+                None または空リストの場合は返済しない。
             margin_trade_type: 1=制度 / 2=一般(長期) / 3=一般(デイトレ)
             exchange: 建玉市場 (1=東証 / 27=東証+ / 9=SOR 等)
         """
@@ -253,12 +254,13 @@ class KabuApiTrade:
             "Price": price if limit else 0,
             "ExpireDay": expire_day,
         }
-        if validated_positions:
-            # ClosePositionOrder と ClosePositions は排他。建玉指定を優先する。
-            body["ClosePositions"] = validated_positions
-        else:
-            # 建玉指定がない場合は決済順序で返済
-            body["ClosePositionOrder"] = 2  # 日付(新しい順)、損益(高い順)
+        if not validated_positions:
+            # ClosePositions がない場合は返済不可
+            return OrderResult(
+                ok=False,
+                message="建玉指定 (ClosePositions) が空のため返済できません",
+            )
+        body["ClosePositions"] = validated_positions
 
         result = self.send_order(body, env=env)
 
